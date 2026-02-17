@@ -1,0 +1,18 @@
+{
+  "name": "sp-bot",
+  "version": "1.0.0",
+  "description": "Slack AI assistant powered by LM Studio",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.0.0",
+    "dotenv": "^16.4.5",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
