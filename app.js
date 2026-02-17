@@ -2,6 +2,9 @@ require("dotenv").config();
 const { App } = require("@slack/bolt");
 const OpenAI = require("openai");
 const { TOOLS, executeTool } = require("./obsidian");
+const { CALENDAR_TOOLS, executeCalendarTool } = require("./calendar");
+
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -17,12 +20,19 @@ const lmstudio = new OpenAI({
 const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT ||
   "You are a helpful, knowledgeable assistant. " +
-  "You have access to an Obsidian vault via tools. " +
+  "You have access to an Obsidian vault and macOS Calendar via tools. " +
   "When the user asks about a person, place, project, topic, or concept — always search the vault first using search_notes before responding. " +
   "If results are found, read the most relevant notes and summarize what you find. " +
   "Only say you don't have information after you have searched and found nothing. " +
   "You can also create and update notes when asked. " +
-  "When referencing a note, mention its file path.";
+  "When referencing a note, mention its file path.\n\n" +
+  "MEETING PREP: When the user asks to prepare for a meeting with someone, follow these steps:\n" +
+  "1. Call get_calendar_events to find the meeting details and other attendees.\n" +
+  "2. Search the vault for notes about the person (try 'folks/' folder).\n" +
+  "3. Read any matching notes in full.\n" +
+  "4. Look for their company in the notes and search the vault for it (try 'companies/' folder).\n" +
+  "5. Search for recent mentions of the person in daily notes or elsewhere.\n" +
+  "6. Synthesize everything into a structured briefing with sections: Meeting Details, About [Person], About [Company], Recent Context, and Suggested Topics.";
 
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || "20", 10);
 
@@ -42,8 +52,9 @@ function describeToolCall(name, args) {
     case "read_note":       return `Reading note: ${args.path}`;
     case "list_vault":      return `Listing vault${args.folder ? `: ${args.folder}` : ""}...`;
     case "create_note":     return `Creating note: ${args.path}`;
-    case "append_to_note":  return `Updating note: ${args.path}`;
-    default:                return `Running ${name}...`;
+    case "append_to_note":        return `Updating note: ${args.path}`;
+    case "get_calendar_events":   return `Checking calendar...`;
+    default:                      return `Running ${name}...`;
   }
 }
 
@@ -70,7 +81,7 @@ app.message(async ({ message, client, say }) => {
       const response = await lmstudio.chat.completions.create({
         model: process.env.LM_STUDIO_MODEL || "openai/gpt-oss-20b",
         messages,
-        tools: TOOLS,
+        tools: ALL_TOOLS,
         tool_choice: "auto",
       });
 
@@ -89,7 +100,9 @@ app.message(async ({ message, client, say }) => {
           const args = JSON.parse(call.function.arguments);
           await status(client, channel, user, describeToolCall(call.function.name, args));
           console.log(`[tool] ${call.function.name}`, args);
-          result = executeTool(call.function.name, args);
+          result = call.function.name.startsWith("get_calendar")
+            ? executeCalendarTool(call.function.name, args)
+            : executeTool(call.function.name, args);
         } catch (err) {
           result = `Error: ${err.message}`;
         }
