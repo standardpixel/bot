@@ -26,6 +26,15 @@ const SYSTEM_PROMPT =
   "Only say you don't have information after you have searched and found nothing. " +
   "You can also create and update notes when asked. " +
   "When referencing a note, mention its file path.\n\n" +
+  "FORMATTING: You are responding inside Slack. Use Slack mrkdwn formatting only:\n" +
+  "- *bold* for bold text (single asterisks)\n" +
+  "- _italic_ for italic text\n" +
+  "- Section headers as a bold line on its own: *Header*\n" +
+  "- Bullet points with a dash: - item\n" +
+  "- `inline code` and ```code blocks``` as normal\n" +
+  "- Never use ## or ### markdown headers\n" +
+  "- Never use ** for bold\n" +
+  "- Never use HTML tags\n\n" +
   "MEETING PREP: When the user asks to prepare for a meeting with someone, follow these steps:\n" +
   "1. Call get_calendar_events to find the meeting details and other attendees.\n" +
   "2. Search the vault for notes about the person (try 'folks/' folder).\n" +
