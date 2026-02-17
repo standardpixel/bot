@@ -45,6 +45,22 @@ const SYSTEM_PROMPT =
 
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || "20", 10);
 
+// Build a Slack message payload with explicit mrkdwn blocks.
+// Splits text into multiple section blocks if it exceeds Slack's 3000 char limit.
+function toSlackMessage(text) {
+  const MAX = 3000;
+  const blocks = [];
+  let remaining = text.trim();
+  while (remaining.length > 0) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: remaining.slice(0, MAX) },
+    });
+    remaining = remaining.slice(MAX);
+  }
+  return { blocks, text: text.slice(0, 150) }; // text = notification fallback
+}
+
 // Send an ephemeral status message visible only to the user
 async function status(client, channel, user, text) {
   try {
@@ -98,7 +114,7 @@ app.message(async ({ message, client, say }) => {
       messages.push(choice.message);
 
       if (choice.finish_reason !== "tool_calls") {
-        await say(choice.message.content || "No response from model.");
+        await say(toSlackMessage(choice.message.content || "No response from model."));
         break;
       }
 
