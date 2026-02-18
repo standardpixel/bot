@@ -100,6 +100,24 @@ function appendToNote({ path: relativePath, content }) {
   return `Appended to: ${relativePath}`;
 }
 
+function writeDailyNote({ content, date }) {
+  requireVault();
+  const dateStr = date || (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
+  const filename = `${dateStr}.md`;
+  const full = path.resolve(VAULT, filename);
+  if (!full.startsWith(path.resolve(VAULT))) throw new Error("Invalid path");
+  if (fs.existsSync(full)) {
+    fs.appendFileSync(full, "\n" + content, "utf-8");
+    return `Appended to daily note: ${filename}`;
+  } else {
+    fs.writeFileSync(full, content, "utf-8");
+    return `Created daily note: ${filename}`;
+  }
+}
+
 // --- OpenAI tool definitions ---
 
 const TOOLS = [
@@ -175,6 +193,27 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "write_daily_note",
+      description:
+        "Write content to today's daily note (YYYY-MM-DD.md in the vault root). " +
+        "If the file already exists the content is appended; otherwise the file is created. " +
+        "Use this — never create_note — when the user asks to add something to their daily note.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "Markdown content to write" },
+          date: {
+            type: "string",
+            description: "Date in YYYY-MM-DD format. Defaults to today if omitted.",
+          },
+        },
+        required: ["content"],
+      },
+    },
+  },
 ];
 
 function executeTool(name, args) {
@@ -183,7 +222,8 @@ function executeTool(name, args) {
     case "read_note":      return readNote(args);
     case "list_vault":     return listVault(args);
     case "create_note":    return createNote(args);
-    case "append_to_note": return appendToNote(args);
+    case "append_to_note":  return appendToNote(args);
+    case "write_daily_note": return writeDailyNote(args);
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }

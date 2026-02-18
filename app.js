@@ -38,6 +38,8 @@ const SYSTEM_PROMPT =
   "- Never use ## or ### markdown headers\n" +
   "- Never use ** for bold\n" +
   "- Never use HTML tags\n\n" +
+  "DAILY NOTES: When the user asks to create or add to a daily note without providing content, ask them what they would like to add before calling write_daily_note. " +
+  "Always use write_daily_note (never create_note) for daily notes — it appends safely if the file already exists.\n\n" +
   "MEETING PREP: When the user asks to prepare for a meeting with someone, follow these steps:\n" +
   "1. Call get_calendar_events to find the meeting details and other attendees.\n" +
   "2. Search the vault for notes about the person (try 'folks/' folder).\n" +
@@ -152,6 +154,7 @@ function describeToolCall(name, args) {
     case "list_vault":      return `Listing vault${args.folder ? `: ${args.folder}` : ""}...`;
     case "create_note":     return `Creating note: ${args.path}`;
     case "append_to_note":        return `Updating note: ${args.path}`;
+    case "write_daily_note":      return `Writing to daily note...`;
     case "get_calendar_events":   return `Checking calendar...`;
     case "run_daily_briefing":    return `Triggering briefing plugin — this can take a few minutes...`;
     default:                      return `Running ${name}...`;
