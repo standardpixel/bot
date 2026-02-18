@@ -25,7 +25,9 @@ const SYSTEM_PROMPT =
   "When the user asks about a person, place, project, topic, or concept — always search the vault first using search_notes before responding. " +
   "If results are found, read the most relevant notes and summarize what you find. " +
   "Only say you don't have information after you have searched and found nothing. " +
-  "You can also create and update notes when asked. " +
+  "You can also create and update notes when explicitly asked to do so. " +
+  "Never create or overwrite a note unless the user specifically requests it. " +
+  "Never save tool results (briefings, search results, calendar data) to the vault — just present them in your reply. " +
   "When referencing a note, mention its file path.\n\n" +
   "FORMATTING: You are responding inside Slack. Use Slack mrkdwn formatting only:\n" +
   "- *bold* for bold text (single asterisks)\n" +
@@ -113,12 +115,32 @@ function toSlackMessage(text) {
   return { blocks, text: text.slice(0, 150) }; // text = notification fallback
 }
 
-// Send an ephemeral status message visible only to the user
-async function status(client, channel, user, text) {
+// Post a regular status message; returns its ts for later update/delete
+async function postStatus(client, channel, text) {
   try {
-    await client.chat.postEphemeral({ channel, user, text });
+    const res = await client.chat.postMessage({ channel, text });
+    return res.ts;
   } catch (err) {
-    console.error("[status]", err.message);
+    console.error("[postStatus]", err.message);
+    return null;
+  }
+}
+
+async function updateStatus(client, channel, ts, text) {
+  if (!ts) return;
+  try {
+    await client.chat.update({ channel, ts, text });
+  } catch (err) {
+    console.error("[updateStatus]", err.message);
+  }
+}
+
+async function deleteStatus(client, channel, ts) {
+  if (!ts) return;
+  try {
+    await client.chat.delete({ channel, ts });
+  } catch (err) {
+    console.error("[deleteStatus]", err.message);
   }
 }
 
@@ -139,12 +161,12 @@ function describeToolCall(name, args) {
 app.message(async ({ message, client, say }) => {
   if (message.channel_type !== "im" || message.subtype || message.bot_id) return;
 
-  const { channel, user } = message;
+  const { channel } = message;
 
+  let statusTs = null;
   try {
-    await status(client, channel, user, "Thinking...");
-
     const history = await client.conversations.history({ channel, limit: HISTORY_LIMIT });
+    statusTs = await postStatus(client, channel, "Thinking...");
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
@@ -167,6 +189,8 @@ app.message(async ({ message, client, say }) => {
       messages.push(choice.message);
 
       if (choice.finish_reason !== "tool_calls") {
+        await deleteStatus(client, channel, statusTs);
+        statusTs = null;
         await say(toSlackMessage(choice.message.content || "No response from model."));
         break;
       }
@@ -176,7 +200,7 @@ app.message(async ({ message, client, say }) => {
         let result;
         try {
           const args = JSON.parse(call.function.arguments);
-          await status(client, channel, user, describeToolCall(call.function.name, args));
+          await updateStatus(client, channel, statusTs, describeToolCall(call.function.name, args));
           console.log(`[tool] ${call.function.name}`, args);
           if (call.function.name.startsWith("get_calendar")) {
             result = await executeCalendarTool(call.function.name, args);
@@ -195,10 +219,11 @@ app.message(async ({ message, client, say }) => {
         });
       }
       messages.push(...toolResults);
-      await status(client, channel, user, "Thinking...");
+      await updateStatus(client, channel, statusTs, "Thinking...");
     }
   } catch (err) {
     console.error("Error:", err.message);
+    await deleteStatus(client, channel, statusTs);
     await say(`Error: ${err.message}`);
   }
 });

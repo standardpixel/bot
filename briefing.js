@@ -112,7 +112,8 @@ const BRIEFING_TOOLS = [
       description:
         "Trigger the Obsidian briefing plugin to generate today's briefing using all connectors (mail, calendar, Slack). " +
         "If today's briefing is already complete it returns immediately. " +
-        "Otherwise it triggers generation and waits — this can take several minutes.",
+        "Otherwise it triggers generation and waits — this can take several minutes. " +
+        "The briefing is automatically saved to the vault by the plugin — NEVER call create_note or append_to_note with the returned content.",
       parameters: {
         type: "object",
         properties: {},
