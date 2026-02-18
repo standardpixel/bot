@@ -4,8 +4,9 @@ const OpenAI = require("openai");
 const { TOOLS, executeTool } = require("./obsidian");
 const { CALENDAR_TOOLS, executeCalendarTool } = require("./calendar");
 const { BRIEFING_TOOLS, executeBriefingTool } = require("./briefing");
+const { LINKS_TOOLS, executeLinksTool } = require("./links");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -155,6 +156,7 @@ function describeToolCall(name, args) {
     case "create_note":     return `Creating note: ${args.path}`;
     case "append_to_note":        return `Updating note: ${args.path}`;
     case "write_daily_note":      return `Writing to daily note...`;
+    case "add_article":           return `Adding article and deploying to standardpixel.com...`;
     case "get_calendar_events":   return `Checking calendar...`;
     case "run_daily_briefing":    return `Triggering briefing plugin — this can take a few minutes...`;
     default:                      return `Running ${name}...`;
@@ -209,6 +211,8 @@ app.message(async ({ message, client, say }) => {
             result = await executeCalendarTool(call.function.name, args);
           } else if (call.function.name.startsWith("run_daily")) {
             result = await executeBriefingTool(call.function.name);
+          } else if (call.function.name === "add_article") {
+            result = executeLinksTool(call.function.name, args);
           } else {
             result = executeTool(call.function.name, args);
           }
