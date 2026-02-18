@@ -3,8 +3,9 @@ const { App } = require("@slack/bolt");
 const OpenAI = require("openai");
 const { TOOLS, executeTool } = require("./obsidian");
 const { CALENDAR_TOOLS, executeCalendarTool } = require("./calendar");
+const { BRIEFING_TOOLS, executeBriefingTool } = require("./briefing");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -130,6 +131,7 @@ function describeToolCall(name, args) {
     case "create_note":     return `Creating note: ${args.path}`;
     case "append_to_note":        return `Updating note: ${args.path}`;
     case "get_calendar_events":   return `Checking calendar...`;
+    case "run_daily_briefing":    return `Triggering briefing plugin — this can take a few minutes...`;
     default:                      return `Running ${name}...`;
   }
 }
@@ -176,9 +178,13 @@ app.message(async ({ message, client, say }) => {
           const args = JSON.parse(call.function.arguments);
           await status(client, channel, user, describeToolCall(call.function.name, args));
           console.log(`[tool] ${call.function.name}`, args);
-          result = call.function.name.startsWith("get_calendar")
-            ? executeCalendarTool(call.function.name, args)
-            : executeTool(call.function.name, args);
+          if (call.function.name.startsWith("get_calendar")) {
+            result = await executeCalendarTool(call.function.name, args);
+          } else if (call.function.name.startsWith("run_daily")) {
+            result = await executeBriefingTool(call.function.name);
+          } else {
+            result = executeTool(call.function.name, args);
+          }
         } catch (err) {
           result = `Error: ${err.message}`;
         }
