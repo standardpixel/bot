@@ -45,12 +45,25 @@ const SYSTEM_PROMPT =
 
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || "20", 10);
 
-// Build a Slack message payload with explicit mrkdwn blocks.
-// Splits text into multiple section blocks if it exceeds Slack's 3000 char limit.
+// Convert standard Markdown to Slack mrkdwn, then build Block Kit blocks.
+// Handles models that output Markdown regardless of prompting.
 function toSlackMessage(text) {
+  const mrkdwn = text
+    .trim()
+    // Headers → bold line (## Meeting Prep → *Meeting Prep*)
+    .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")
+    // **bold** and __bold__ → *bold*
+    .replace(/\*\*(.+?)\*\*/gs, "*$1*")
+    .replace(/__(.+?)__/gs, "*$1*")
+    // Strip any HTML tags
+    .replace(/<[^>]+>/g, "")
+    // Collapse 3+ consecutive blank lines to 2
+    .replace(/\n{3,}/g, "\n\n");
+
+  // Split into Block Kit section blocks (max 3000 chars each)
   const MAX = 3000;
   const blocks = [];
-  let remaining = text.trim();
+  let remaining = mrkdwn;
   while (remaining.length > 0) {
     blocks.push({
       type: "section",
@@ -58,6 +71,7 @@ function toSlackMessage(text) {
     });
     remaining = remaining.slice(MAX);
   }
+
   return { blocks, text: text.slice(0, 150) }; // text = notification fallback
 }
 
