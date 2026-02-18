@@ -157,6 +157,7 @@ function describeToolCall(name, args) {
     case "append_to_note":        return `Updating note: ${args.path}`;
     case "write_daily_note":      return `Writing to daily note...`;
     case "add_article":           return `Adding article and deploying to standardpixel.com...`;
+    case "deploy_links":          return `Syncing and deploying links page...`;
     case "get_calendar_events":   return `Checking calendar...`;
     case "run_daily_briefing":    return `Triggering briefing plugin — this can take a few minutes...`;
     default:                      return `Running ${name}...`;
@@ -211,7 +212,7 @@ app.message(async ({ message, client, say }) => {
             result = await executeCalendarTool(call.function.name, args);
           } else if (call.function.name.startsWith("run_daily")) {
             result = await executeBriefingTool(call.function.name);
-          } else if (call.function.name === "add_article") {
+          } else if (call.function.name === "add_article" || call.function.name === "deploy_links") {
             result = executeLinksTool(call.function.name, args);
           } else {
             result = executeTool(call.function.name, args);

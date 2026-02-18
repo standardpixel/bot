@@ -4,28 +4,42 @@ const os = require("os");
 const { execFileSync } = require("child_process");
 
 const SITE_DIR = path.join(os.homedir(), "src", "standardpixel.com");
-const ARTICLES_FILE = path.join(SITE_DIR, "_data", "articles.yml");
+const SYNC_SCRIPT = path.join(SITE_DIR, "sync-articles.rb");
 
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+const rawVault = (process.env.OBSIDIAN_VAULT_PATH || "").replace(/\\(.)/g, "$1");
+const VAULT = rawVault.startsWith("~") ? path.join(os.homedir(), rawVault.slice(1)) : rawVault;
+const LINKS_MD = path.join(VAULT, "Links.md");
 
-function addArticle({ title, url, note, date }) {
-  const dateStr = date || todayStr();
+// Run the sync script, then commit with --no-verify (hook would re-run the
+// same sync redundantly) and push to GitHub Pages.
+function syncAndDeploy() {
+  execFileSync("ruby", [SYNC_SCRIPT], { cwd: SITE_DIR, timeout: 120000 });
 
-  // Build YAML entry using JSON.stringify for safe double-quoted strings
-  let entry = `\n- title: ${JSON.stringify(title)}\n  url: ${JSON.stringify(url)}\n  date: ${dateStr}`;
-  if (note) entry += `\n  note: ${JSON.stringify(note)}`;
-  entry += "\n";
+  const diff = execFileSync("git", ["-C", SITE_DIR, "diff", "--name-only", "_data/articles.yml"])
+    .toString()
+    .trim();
 
-  fs.appendFileSync(ARTICLES_FILE, entry, "utf-8");
+  if (!diff) {
+    return "No new articles found — links page is already up to date.";
+  }
 
   execFileSync("git", ["-C", SITE_DIR, "add", "_data/articles.yml"]);
-  execFileSync("git", ["-C", SITE_DIR, "commit", "-m", `Add article: ${title}`]);
+  execFileSync("git", ["-C", SITE_DIR, "commit", "--no-verify", "-m", "Update articles from Obsidian"]);
   execFileSync("git", ["-C", SITE_DIR, "push", "origin", "master"], { timeout: 30000 });
 
-  return `Added and deployed: "${title}" — changes will be live on standardpixel.com/articles.html shortly.`;
+  return "Links page synced and deployed — changes will be live on standardpixel.com/articles.html shortly.";
+}
+
+// Append a URL to Obsidian's Links.md, then sync and deploy.
+function addArticle({ url, note }) {
+  if (!VAULT) throw new Error("OBSIDIAN_VAULT_PATH is not set in .env");
+  if (!fs.existsSync(LINKS_MD)) throw new Error(`Links.md not found at ${LINKS_MD}`);
+
+  let entry = `\n- ${url}`;
+  if (note) entry += ` - ${note}`;
+  fs.appendFileSync(LINKS_MD, entry, "utf-8");
+
+  return syncAndDeploy();
 }
 
 const LINKS_TOOLS = [
@@ -34,18 +48,32 @@ const LINKS_TOOLS = [
     function: {
       name: "add_article",
       description:
-        "Add a link/article to the standardpixel.com links page and deploy it. " +
-        "Appends the entry to _data/articles.yml, commits, and pushes to GitHub Pages. " +
-        "Use this whenever the user asks to add a link or article to their site.",
+        "Add a URL to the standardpixel.com links page and deploy it. " +
+        "Appends the URL to Obsidian's Links.md (the source of truth), runs the sync " +
+        "script to fetch the title and regenerate articles.yml, then pushes to GitHub Pages. " +
+        "Use this when the user asks to add a link or article to their site.",
       parameters: {
         type: "object",
         properties: {
-          title: { type: "string", description: "Title of the article or link" },
-          url:   { type: "string", description: "Full URL of the article" },
-          note:  { type: "string", description: "Optional short note or comment about the article" },
-          date:  { type: "string", description: "Date in YYYY-MM-DD format. Defaults to today if omitted." },
+          url:  { type: "string", description: "Full URL of the article" },
+          note: { type: "string", description: "Optional short note or comment about the article" },
         },
-        required: ["title", "url"],
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "deploy_links",
+      description:
+        "Sync and deploy the standardpixel.com links page from Obsidian's Links.md. " +
+        "Use this when the user has already added links to Links.md and wants to publish them, " +
+        "or just wants to deploy any pending link changes.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
       },
     },
   },
@@ -53,7 +81,8 @@ const LINKS_TOOLS = [
 
 function executeLinksTool(name, args) {
   switch (name) {
-    case "add_article": return addArticle(args);
+    case "add_article":  return addArticle(args);
+    case "deploy_links": return syncAndDeploy();
     default: throw new Error(`Unknown links tool: ${name}`);
   }
 }
