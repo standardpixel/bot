@@ -5,7 +5,17 @@ const { execSync } = require("child_process");
 
 const rawVault = (process.env.OBSIDIAN_VAULT_PATH || "").replace(/\\(.)/g, "$1");
 const VAULT = rawVault.startsWith("~") ? path.join(os.homedir(), rawVault.slice(1)) : rawVault;
-const BRIEFING_FOLDER = "Briefings";
+
+// Read briefingFolder from the plugin's own settings so it stays in sync
+function getBriefingFolder() {
+  try {
+    const dataJson = path.join(VAULT, ".obsidian", "plugins", "briefing-notes", "data.json");
+    const settings = JSON.parse(fs.readFileSync(dataJson, "utf-8"));
+    return settings.briefingFolder || "Briefings";
+  } catch {
+    return "Briefings";
+  }
+}
 
 function todayStr() {
   const d = new Date();
@@ -13,17 +23,23 @@ function todayStr() {
 }
 
 function getBriefingPath() {
-  return path.join(VAULT, BRIEFING_FOLDER, `Briefing ${todayStr()}.md`);
+  return path.join(VAULT, getBriefingFolder(), `Briefing ${todayStr()}.md`);
 }
 
-// The note starts with a Status section while generating.
-// When done, the plugin replaces the entire content with the final briefing (no Status section).
-function isComplete(content) {
+// The plugin writes "Generating briefing..." during generation.
+// When done it replaces ALL content with the final briefing.
+// Only check for the specific in-progress string — not "## Status" which
+// can legitimately appear in LLM-generated briefing content.
+function isInProgress(content) {
   return (
-    content.trim().length > 0 &&
-    !content.includes("Generating briefing...") &&
-    !content.includes("## Status")
+    content.includes("Generating briefing...") ||
+    content.includes("Gathering notes...") ||
+    content.includes("Generating final briefing with LLM...")
   );
+}
+
+function isComplete(content) {
+  return content.trim().length > 0 && !isInProgress(content);
 }
 
 // Trigger the auto command in Obsidian via the command palette using AppleScript.
@@ -82,12 +98,6 @@ async function runDailyBriefing() {
 
     if (isComplete(content)) {
       return content;
-    }
-
-    // Return current status so the model can relay progress to the user
-    const statusMatch = content.match(/## Status\n([\s\S]*)/);
-    if (statusMatch) {
-      // Not done yet — keep polling (return value not used mid-loop)
     }
   }
 
