@@ -45,10 +45,47 @@ const SYSTEM_PROMPT =
 
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || "20", 10);
 
+// Convert a block of markdown table lines into Slack-friendly text.
+// 2-column tables → "*Key:* Value" pairs. Wider tables → bold header row + data rows.
+function convertTable(lines) {
+  const isSeparator = (l) => /^\|[\s|:=-]+\|$/.test(l.trim());
+  const dataLines = lines.filter((l) => l.trim().startsWith("|") && !isSeparator(l));
+  const rows = dataLines.map((l) =>
+    l.split("|").slice(1, -1).map((cell) => cell.trim())
+  );
+  if (rows.length === 0) return "";
+  const [headers, ...body] = rows;
+  if (headers.length === 2 && body.length > 0) {
+    // Key-value layout
+    return body.map((r) => `*${r[0]}:* ${r[1] ?? ""}`).join("\n");
+  }
+  // Multi-column layout
+  const headerLine = headers.map((h) => `*${h}*`).join(" | ");
+  const rowLines = body.map((r) => r.join(" | "));
+  return [headerLine, ...rowLines].join("\n");
+}
+
+// Detect and replace all markdown table blocks in text before other processing.
+function stripTables(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let tableLines = [];
+  for (const line of lines) {
+    if (line.trim().startsWith("|")) {
+      tableLines.push(line);
+    } else {
+      if (tableLines.length) { out.push(convertTable(tableLines)); tableLines = []; }
+      out.push(line);
+    }
+  }
+  if (tableLines.length) out.push(convertTable(tableLines));
+  return out.join("\n");
+}
+
 // Convert standard Markdown to Slack mrkdwn, then build Block Kit blocks.
 // Handles models that output Markdown regardless of prompting.
 function toSlackMessage(text) {
-  const mrkdwn = text
+  const mrkdwn = stripTables(text)
     .trim()
     // Headers → bold line (## Meeting Prep → *Meeting Prep*)
     .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")
