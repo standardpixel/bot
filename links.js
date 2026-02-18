@@ -27,6 +27,12 @@ function syncAndDeploy() {
   execFileSync("git", ["-C", SITE_DIR, "commit", "--no-verify", "-m", "Update articles from Obsidian"]);
   execFileSync("git", ["-C", SITE_DIR, "push", "origin", "master"], { timeout: 30000 });
 
+  // GitHub Pages serves from gh-pages — keep it in sync with master
+  execFileSync("git", ["-C", SITE_DIR, "checkout", "gh-pages"]);
+  execFileSync("git", ["-C", SITE_DIR, "merge", "master", "--no-edit"]);
+  execFileSync("git", ["-C", SITE_DIR, "push", "origin", "gh-pages"], { timeout: 30000 });
+  execFileSync("git", ["-C", SITE_DIR, "checkout", "master"]);
+
   return "Links page synced and deployed — changes will be live on standardpixel.com/articles.html shortly.";
 }
 
