@@ -17,6 +17,7 @@ const app = new App({
 const lmstudio = new OpenAI({
   baseURL: process.env.LM_STUDIO_BASE_URL || "http://localhost:1234/v1",
   apiKey: "lm-studio",
+  timeout: 1200000, // 20 minute timeout (daily briefing can take up to 20 minutes)
 });
 
 const SYSTEM_PROMPT =

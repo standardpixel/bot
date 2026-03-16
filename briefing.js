@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync } = require("child_process");
+const { execSync, spawn } = require("child_process");
 
 const rawVault = (process.env.OBSIDIAN_VAULT_PATH || "").replace(/\\(.)/g, "$1");
 const VAULT = rawVault.startsWith("~") ? path.join(os.homedir(), rawVault.slice(1)) : rawVault;
@@ -42,26 +42,13 @@ function isComplete(content) {
   return content.trim().length > 0 && !isInProgress(content);
 }
 
-// Trigger the auto command in Obsidian via the command palette using AppleScript.
-// Requires Accessibility access for Terminal in System Settings → Privacy & Security.
+// Trigger the briefing plugin using Obsidian CLI.
+// Much more reliable than AppleScript, especially when system has been idle.
+// Requires Obsidian CLI to be enabled in Settings → General → Command line interface.
 function triggerBriefingPlugin() {
-  const script = `
-tell application "Obsidian"
-  activate
-end tell
-delay 1
-tell application "System Events"
-  tell process "Obsidian"
-    keystroke "p" using {command down}
-    delay 0.5
-    keystroke "Generate Briefing Note (Auto)"
-    delay 0.5
-    key code 36
-  end tell
-end tell
-`;
-  execSync(`osascript << 'OSASCRIPT'\n${script}\nOSASCRIPT`, {
-    timeout: 15000,
+  const commandId = "briefing-notes:generate-briefing-auto";
+  execSync(`obsidian eval "app.commands.executeCommandById('${commandId}')"`, {
+    timeout: 30000,
     shell: "/bin/bash",
   });
 }
@@ -77,31 +64,88 @@ async function runDailyBriefing() {
     }
   }
 
-  // Trigger the plugin
-  triggerBriefingPlugin();
+  // Start caffeinate to prevent system sleep during briefing generation
+  // This ensures network connections and apps stay awake even if computer has been idle
+  const caffeinate = spawn('caffeinate');
+  console.log('[briefing] Started caffeinate to prevent system sleep');
 
-  // Poll every 5 seconds until complete or timeout (8 minutes to allow for slow connectors)
-  const POLL_MS = 5000;
-  const TIMEOUT_MS = 8 * 60 * 1000;
-  const started = Date.now();
+  try {
+    // Retry the trigger up to 3 times if file isn't created
+    // This handles cases where CLI command fails on idle systems or Obsidian is slow to respond
+    let triggerAttempts = 0;
+    const MAX_TRIGGER_ATTEMPTS = 3;
 
-  while (Date.now() - started < TIMEOUT_MS) {
-    await new Promise((r) => setTimeout(r, POLL_MS));
+    while (triggerAttempts < MAX_TRIGGER_ATTEMPTS) {
+      triggerAttempts++;
+      console.log(`[briefing] Trigger attempt ${triggerAttempts}/${MAX_TRIGGER_ATTEMPTS}`);
 
-    if (!fs.existsSync(briefingPath)) continue;
+      try {
+        triggerBriefingPlugin();
+      } catch (err) {
+        console.error(`[briefing] CLI trigger error on attempt ${triggerAttempts}:`, err.message);
+        if (triggerAttempts < MAX_TRIGGER_ATTEMPTS) {
+          console.log('[briefing] Waiting 10 seconds before retry...');
+          await new Promise((r) => setTimeout(r, 10000));
+          continue;
+        }
+        return `Failed to trigger briefing plugin after ${MAX_TRIGGER_ATTEMPTS} attempts. Error: ${err.message}\n\nMake sure:\n• Obsidian is running\n• Obsidian CLI is enabled (Settings → General → Command line interface)\n• The briefing-notes plugin is installed and enabled`;
+      }
 
-    const content = fs.readFileSync(briefingPath, "utf-8");
+      // Wait up to 30 seconds for file to be created (indicates plugin started)
+      let fileCheckAttempts = 0;
+      while (fileCheckAttempts < 6 && !fs.existsSync(briefingPath)) {
+        await new Promise((r) => setTimeout(r, 5000));
+        fileCheckAttempts++;
+      }
 
-    if (content.includes("**Error:**")) {
-      return `Briefing generation failed:\n\n${content}`;
+      // If file exists, break out and proceed with polling
+      if (fs.existsSync(briefingPath)) {
+        console.log('[briefing] File created, plugin started successfully');
+        break;
+      }
+
+      // File doesn't exist after 30 seconds
+      console.warn(`[briefing] File not created after trigger attempt ${triggerAttempts}`);
+
+      if (triggerAttempts < MAX_TRIGGER_ATTEMPTS) {
+        console.log('[briefing] Retrying trigger in 10 seconds...');
+        await new Promise((r) => setTimeout(r, 10000));
+      } else {
+        return `Briefing file was never created after ${MAX_TRIGGER_ATTEMPTS} trigger attempts. The Obsidian plugin may not be responding.\n\nThis often happens when the computer has been idle. Try:\n1. Manually opening Obsidian\n2. Running the briefing command manually once\n3. Asking me to try again`;
+      }
     }
 
-    if (isComplete(content)) {
-      return content;
+    // Poll every 5 seconds until complete or timeout (20 minutes to allow for slow connectors)
+    const POLL_MS = 5000;
+    const TIMEOUT_MS = 20 * 60 * 1000;
+    const started = Date.now();
+
+    while (Date.now() - started < TIMEOUT_MS) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+
+      if (!fs.existsSync(briefingPath)) {
+        console.warn('[briefing] File disappeared during polling');
+        continue;
+      }
+
+      const content = fs.readFileSync(briefingPath, "utf-8");
+
+      if (content.includes("**Error:**")) {
+        return `Briefing generation failed:\n\n${content}`;
+      }
+
+      if (isComplete(content)) {
+        console.log('[briefing] Briefing completed successfully');
+        return content;
+      }
     }
+
+    return "Briefing generation timed out after 20 minutes. The plugin may be stuck.";
+  } finally {
+    // Always kill caffeinate when done, whether successful or not
+    caffeinate.kill();
+    console.log('[briefing] Stopped caffeinate');
   }
-
-  return "Briefing generation timed out after 8 minutes.";
 }
 
 const BRIEFING_TOOLS = [
