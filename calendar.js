@@ -30,29 +30,37 @@ tell application "Calendar"
 end tell
 `;
 
-  const raw = execSync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
-    timeout: 10000,
-    shell: "/bin/bash",
-  })
-    .toString()
-    .trim();
+  try {
+    const raw = execSync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+      timeout: 30000, // Increase timeout to 30 seconds for slow Calendar app
+      shell: "/bin/bash",
+    })
+      .toString()
+      .trim();
 
-  if (!raw) return "No upcoming events found.";
+    if (!raw) return "No upcoming events found.";
 
-  return raw
-    .split("~||~")
-    .filter(Boolean)
-    .map((line) => {
-      const [title, start, end, attendees] = line.split("~|~");
-      return {
-        title: title?.trim(),
-        start: start?.trim(),
-        end: end?.trim(),
-        attendees: attendees?.trim()
-          ? attendees.split(",").map((a) => a.trim()).filter(Boolean)
-          : [],
-      };
-    });
+    return raw
+      .split("~||~")
+      .filter(Boolean)
+      .map((line) => {
+        const [title, start, end, attendees] = line.split("~|~");
+        return {
+          title: title?.trim(),
+          start: start?.trim(),
+          end: end?.trim(),
+          attendees: attendees?.trim()
+            ? attendees.split(",").map((a) => a.trim()).filter(Boolean)
+            : [],
+        };
+      });
+  } catch (err) {
+    console.error("[Calendar Error]", err.message);
+    if (err.killed) {
+      throw new Error("Calendar request timed out after 30 seconds. The Calendar app may be unresponsive.");
+    }
+    throw new Error(`Failed to access Calendar: ${err.message}. Make sure Terminal has Calendar access in System Settings.`);
+  }
 }
 
 const CALENDAR_TOOLS = [

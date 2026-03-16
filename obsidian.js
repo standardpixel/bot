@@ -12,6 +12,9 @@ const SEARCH_SNIPPET_CHARS = 200;
 
 function requireVault() {
   if (!VAULT) throw new Error("OBSIDIAN_VAULT_PATH is not set in .env");
+  if (!fs.existsSync(VAULT)) {
+    throw new Error(`Vault path does not exist: ${VAULT}. This may be an iCloud sync issue. Make sure the vault is fully downloaded.`);
+  }
 }
 
 // Prevent path traversal attacks
@@ -28,11 +31,20 @@ function safePath(relativePath) {
 
 // Walk vault recursively, yielding .md file paths
 function* walkVault(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith(".")) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) yield* walkVault(full);
-    else if (entry.name.endsWith(".md")) yield full;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const full = path.join(dir, entry.name);
+      try {
+        if (entry.isDirectory()) yield* walkVault(full);
+        else if (entry.name.endsWith(".md")) yield full;
+      } catch (err) {
+        // Skip files that can't be accessed (e.g., iCloud placeholders)
+        console.warn(`[walkVault] Skipping ${full}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[walkVault] Cannot read directory ${dir}: ${err.message}`);
   }
 }
 
@@ -42,23 +54,35 @@ function searchNotes({ query }) {
   requireVault();
   const lower = query.toLowerCase();
   const results = [];
+  let skippedFiles = 0;
   for (const full of walkVault(VAULT)) {
     if (results.length >= MAX_SEARCH_RESULTS) break;
     const rel = path.relative(VAULT, full);
-    const content = fs.readFileSync(full, "utf-8");
-    const idx = content.toLowerCase().indexOf(lower);
-    const titleMatch = rel.toLowerCase().includes(lower);
-    if (idx >= 0 || titleMatch) {
-      const start = Math.max(0, idx - 80);
-      const snippet = idx >= 0
-        ? "..." + content.slice(start, start + SEARCH_SNIPPET_CHARS).trim() + "..."
-        : "";
-      results.push({ path: rel, snippet });
+    try {
+      const content = fs.readFileSync(full, "utf-8");
+      const idx = content.toLowerCase().indexOf(lower);
+      const titleMatch = rel.toLowerCase().includes(lower);
+      if (idx >= 0 || titleMatch) {
+        const start = Math.max(0, idx - 80);
+        const snippet = idx >= 0
+          ? "..." + content.slice(start, start + SEARCH_SNIPPET_CHARS).trim() + "..."
+          : "";
+        results.push({ path: rel, snippet });
+      }
+    } catch (err) {
+      // Skip files that can't be read (e.g., iCloud placeholders not yet downloaded)
+      console.warn(`[searchNotes] Skipping ${rel}: ${err.message}`);
+      skippedFiles++;
     }
   }
+
+  if (results.length === 0 && skippedFiles > 0) {
+    return `No notes found matching: "${query}". (Note: ${skippedFiles} files were skipped, possibly due to iCloud sync. Try again in a moment.)`;
+  }
+
   return results.length > 0
     ? results
-    : "No notes found matching: " + query;
+    : `No notes found matching: "${query}"`;
 }
 
 function readNote({ path: relativePath }) {

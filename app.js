@@ -5,8 +5,16 @@ const { TOOLS, executeTool } = require("./obsidian");
 const { CALENDAR_TOOLS, executeCalendarTool } = require("./calendar");
 const { BRIEFING_TOOLS, executeBriefingTool } = require("./briefing");
 const { LINKS_TOOLS, executeLinksTool } = require("./links");
+const { STABLE_DIFFUSION_TOOLS, executeStableDiffusionTool } = require("./stable-diffusion");
+const { AOL1995_TOOLS, executeAOL1995Tool } = require("./aol1995");
+const { AOL_SHORTCUT_TOOLS, executeAOLShortcutTool } = require("./aol-shortcut");
+const { AOL_ALL_TOOLS, executeAOLAllTool } = require("./aol-all");
+const { AOL_STATUS_TOOLS, executeAOLStatusTool } = require("./aol-status");
+const { AOL_STOP_TOOLS, executeAOLStopTool } = require("./aol-stop");
+const { SCHEDULE_TOOLS, executeSchedulerTool, initScheduler, handleModalSubmission, getSchedulesByUser, getScheduleById } = require("./scheduler");
+const { getScheduleModal, getManageSchedulesModal } = require("./modals");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -18,12 +26,87 @@ const lmstudio = new OpenAI({
   baseURL: process.env.LM_STUDIO_BASE_URL || "http://localhost:1234/v1",
   apiKey: "lm-studio",
   timeout: 1200000, // 20 minute timeout (daily briefing can take up to 20 minutes)
+  maxRetries: 2,   // Retry up to 2 times on failure
+});
+
+// Helper function to execute tools (used by both message handler and scheduler)
+async function executeToolByName(toolName, args) {
+  if (toolName.startsWith("get_calendar")) {
+    return await executeCalendarTool(toolName, args);
+  } else if (toolName.startsWith("run_daily")) {
+    return await executeBriefingTool(toolName);
+  } else if (toolName === "add_article" || toolName === "deploy_links") {
+    return executeLinksTool(toolName, args);
+  } else if (toolName === "start_stable_diffusion") {
+    return executeStableDiffusionTool(toolName, args);
+  } else if (toolName === "start_aol1995_server") {
+    return executeAOL1995Tool(toolName, args);
+  } else if (toolName === "start_aol_shortcut") {
+    return executeAOLShortcutTool(toolName, args);
+  } else if (toolName === "start_all_aol_services") {
+    return executeAOLAllTool(toolName, args);
+  } else if (toolName === "check_aol_services_status") {
+    return executeAOLStatusTool(toolName, args);
+  } else if (toolName === "stop_aol_services") {
+    return executeAOLStopTool(toolName, args);
+  } else {
+    return executeTool(toolName, args);
+  }
+}
+
+// Modal submission handlers
+app.view("schedule_modal_submit", async ({ ack, body, view, client }) => {
+  await ack();
+  await handleModalSubmission(body, view, client, lmstudio, SYSTEM_PROMPT, ALL_TOOLS, executeToolByName, false);
+});
+
+app.view("edit_schedule_modal_submit", async ({ ack, body, view, client }) => {
+  await ack();
+  await handleModalSubmission(body, view, client, lmstudio, SYSTEM_PROMPT, ALL_TOOLS, executeToolByName, true);
+});
+
+// Button handler for opening schedule modal (workaround for trigger_id)
+app.action("open_schedule_modal_button", async ({ ack, body, client }) => {
+  await ack();
+  const modal = getScheduleModal();
+  await client.views.open({ trigger_id: body.trigger_id, view: modal });
+});
+
+app.action("open_manage_schedules_button", async ({ ack, body, client }) => {
+  await ack();
+  const schedules = getSchedulesByUser(body.user.id);
+  const modal = getManageSchedulesModal(schedules);
+  await client.views.open({ trigger_id: body.trigger_id, view: modal });
+});
+
+// Edit schedule button handler
+app.action(/^edit_schedule_/, async ({ ack, body, client }) => {
+  await ack();
+  const scheduleId = body.actions[0].action_id.replace("edit_schedule_", "");
+  const schedule = getScheduleById(scheduleId);
+  if (schedule) {
+    const modal = getScheduleModal(schedule);
+    await client.views.open({ trigger_id: body.trigger_id, view: modal });
+  }
+});
+
+// Delete schedule action handler
+app.action(/^delete_schedule_/, async ({ ack, body, client }) => {
+  await ack();
+  const scheduleId = body.actions[0].action_id.replace("delete_schedule_", "");
+  const { deleteSchedule } = require("./scheduler");
+  await deleteSchedule(scheduleId);
+  await client.chat.postMessage({
+    channel: body.user.id,
+    text: "✅ Schedule deleted successfully."
+  });
 });
 
 const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT ||
   "You are a helpful, knowledgeable assistant. " +
-  "You have access to an Obsidian vault and macOS Calendar via tools. " +
+  "You have access to an Obsidian vault, macOS Calendar, and scheduling capabilities via tools. " +
+  "When the user asks to schedule something, use open_schedule_modal. When they want to view or manage their schedules, use open_manage_schedules. " +
   "When the user asks about a person, place, project, topic, or concept — always search the vault first using search_notes before responding. " +
   "If results are found, read the most relevant notes and summarize what you find. " +
   "Only say you don't have information after you have searched and found nothing. " +
@@ -51,6 +134,7 @@ const SYSTEM_PROMPT =
   "6. Synthesize everything into a structured briefing with sections: Meeting Details, About [Person], About [Company], Recent Context, and Suggested Topics.";
 
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || "20", 10);
+const RECENT_MESSAGES_FOCUS = parseInt(process.env.RECENT_MESSAGES_FOCUS || "10", 10);
 
 // Convert a block of markdown table lines into Slack-friendly text.
 // 2-column tables → "*Key:* Value" pairs. Wider tables → bold header row + data rows.
@@ -161,6 +245,16 @@ function describeToolCall(name, args) {
     case "deploy_links":          return `Syncing and deploying links page...`;
     case "get_calendar_events":   return `Checking calendar...`;
     case "run_daily_briefing":    return `Triggering briefing plugin — this can take a few minutes...`;
+    case "start_stable_diffusion": return `Starting Stable Diffusion WebUI with API...`;
+    case "start_aol1995_server":  return `Starting AOL 1995 server with HTTPS on port 3010...`;
+    case "start_aol_shortcut":    return `Running AOL shortcut...`;
+    case "start_all_aol_services": return `Starting all AOL services (Shortcut, Stable Diffusion, AOL 1995)...`;
+    case "check_aol_services_status": return `Checking status of AOL services...`;
+    case "stop_aol_services":     return `Stopping AOL services...`;
+    case "open_schedule_modal":   return `Opening schedule configuration...`;
+    case "open_manage_schedules": return `Loading your schedules...`;
+    case "list_schedules":        return `Fetching your schedules...`;
+    case "delete_schedule":       return `Deleting schedule...`;
     default:                      return `Running ${name}...`;
   }
 }
@@ -168,31 +262,66 @@ function describeToolCall(name, args) {
 app.message(async ({ message, client, say }) => {
   if (message.channel_type !== "im" || message.subtype || message.bot_id) return;
 
-  const { channel } = message;
+  const { channel, thread_ts, ts } = message;
 
   let statusTs = null;
   try {
-    const history = await client.conversations.history({ channel, limit: HISTORY_LIMIT });
+    // If in a thread, get thread history; otherwise get channel history
+    let history;
+    if (thread_ts) {
+      history = await client.conversations.replies({
+        channel,
+        ts: thread_ts,
+        limit: HISTORY_LIMIT
+      });
+    } else {
+      history = await client.conversations.history({ channel, limit: HISTORY_LIMIT });
+    }
+
     statusTs = await postStatus(client, channel, "Thinking...");
+
+    // Use only the most recent messages to avoid overwhelming the model
+    const recentMessages = history.messages
+      .filter((m) => !m.subtype)
+      .reverse()
+      .slice(-RECENT_MESSAGES_FOCUS);
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
-      ...history.messages
-        .filter((m) => !m.subtype)
-        .reverse()
-        .map((m) => ({ role: m.bot_id ? "assistant" : "user", content: m.text || "" })),
+      ...recentMessages.map((m) => {
+        let content = m.text || "";
+        // Truncate very long messages in history to save context
+        if (content.length > 500) {
+          content = content.slice(0, 500) + "... [truncated]";
+        }
+        return { role: m.bot_id ? "assistant" : "user", content };
+      }),
     ];
 
     const MAX_ITERATIONS = 10;
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const response = await lmstudio.chat.completions.create({
-        model: process.env.LM_STUDIO_MODEL || "openai/gpt-oss-20b",
-        messages,
-        tools: ALL_TOOLS,
-        tool_choice: "auto",
-      });
+      let response;
+      try {
+        response = await lmstudio.chat.completions.create({
+          model: process.env.LM_STUDIO_MODEL || "openai/gpt-oss-20b",
+          messages,
+          tools: ALL_TOOLS,
+          tool_choice: "auto",
+        });
+      } catch (apiErr) {
+        console.error("[LM Studio API Error]", apiErr.message);
+        await deleteStatus(client, channel, statusTs);
+        await say(`Unable to reach LM Studio. Please make sure:\n• LM Studio is running\n• A model is loaded\n• The local server is started in LM Studio\n\nError: ${apiErr.message}`);
+        return;
+      }
 
       const choice = response.choices[0];
+      if (!choice || !choice.message) {
+        console.error("[Empty response from model]");
+        await deleteStatus(client, channel, statusTs);
+        await say("Received an empty response from the model. This sometimes happens when the model is overloaded. Please try again.");
+        return;
+      }
       messages.push(choice.message);
 
       if (choice.finish_reason !== "tool_calls") {
@@ -209,17 +338,93 @@ app.message(async ({ message, client, say }) => {
           const args = JSON.parse(call.function.arguments);
           await updateStatus(client, channel, statusTs, describeToolCall(call.function.name, args));
           console.log(`[tool] ${call.function.name}`, args);
-          if (call.function.name.startsWith("get_calendar")) {
+          if (call.function.name.startsWith("open_schedule") ||
+              call.function.name.startsWith("open_manage") ||
+              call.function.name === "list_schedules" ||
+              call.function.name === "delete_schedule") {
+            result = executeSchedulerTool(call.function.name, args, message.user);
+
+            // If it's a modal trigger, post a message with a button
+            if (result.trigger_modal) {
+              await deleteStatus(client, channel, statusTs);
+              statusTs = null;
+
+              const buttonText = result.trigger_modal === "schedule" ? "Schedule Task" : "Manage Schedules";
+              const actionId = result.trigger_modal === "schedule" ? "open_schedule_modal_button" : "open_manage_schedules_button";
+
+              await client.chat.postMessage({
+                channel,
+                text: result.message,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: result.message
+                    }
+                  },
+                  {
+                    type: "actions",
+                    elements: [{
+                      type: "button",
+                      text: { type: "plain_text", text: buttonText },
+                      action_id: actionId,
+                      style: "primary"
+                    }]
+                  }
+                ]
+              });
+
+              result = "Modal button sent to user";
+            }
+          } else if (call.function.name.startsWith("get_calendar")) {
             result = await executeCalendarTool(call.function.name, args);
           } else if (call.function.name.startsWith("run_daily")) {
             result = await executeBriefingTool(call.function.name);
           } else if (call.function.name === "add_article" || call.function.name === "deploy_links") {
             result = executeLinksTool(call.function.name, args);
+          } else if (call.function.name === "start_stable_diffusion") {
+            result = executeStableDiffusionTool(call.function.name, args);
+          } else if (call.function.name === "start_aol1995_server") {
+            result = executeAOL1995Tool(call.function.name, args);
+          } else if (call.function.name === "start_aol_shortcut") {
+            result = executeAOLShortcutTool(call.function.name, args);
+          } else if (call.function.name === "start_all_aol_services") {
+            result = executeAOLAllTool(call.function.name, args);
+          } else if (call.function.name === "check_aol_services_status") {
+            result = executeAOLStatusTool(call.function.name, args);
+          } else if (call.function.name === "stop_aol_services") {
+            result = executeAOLStopTool(call.function.name, args);
           } else {
             result = executeTool(call.function.name, args);
           }
         } catch (err) {
-          result = `Error: ${err.message}`;
+          console.error(`[tool error: ${call.function.name}]`, err.message, err.stack);
+
+          // Provide specific error messages based on tool type
+          let errorMessage = err.message;
+          if (call.function.name.startsWith("search_notes") ||
+              call.function.name.startsWith("read_note") ||
+              call.function.name.startsWith("list_vault") ||
+              call.function.name.startsWith("write_") ||
+              call.function.name.startsWith("append_") ||
+              call.function.name.startsWith("create_note")) {
+            if (err.message.includes("OBSIDIAN_VAULT_PATH")) {
+              errorMessage = "Obsidian vault path is not configured. Please check your .env file.";
+            } else if (err.message.includes("ENOENT") || err.message.includes("not found")) {
+              errorMessage = `Could not access the vault or file. The path may not exist or may not be synced via iCloud yet. Error: ${err.message}`;
+            } else {
+              errorMessage = `Vault error: ${err.message}`;
+            }
+          } else if (call.function.name.startsWith("get_calendar")) {
+            if (err.message.includes("timeout")) {
+              errorMessage = "Calendar request timed out. The Calendar app may be unresponsive.";
+            } else {
+              errorMessage = `Calendar error: ${err.message}. Make sure Terminal has Calendar access in System Settings → Privacy & Security → Calendars.`;
+            }
+          }
+
+          result = `Error: ${errorMessage}`;
         }
         toolResults.push({
           role: "tool",
@@ -239,5 +444,6 @@ app.message(async ({ message, client, say }) => {
 
 (async () => {
   await app.start();
+  await initScheduler(app.client, lmstudio, SYSTEM_PROMPT, ALL_TOOLS, executeToolByName);
   console.log("sp-bot is running");
 })();
