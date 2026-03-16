@@ -13,8 +13,9 @@ const { AOL_STATUS_TOOLS, executeAOLStatusTool } = require("./aol-status");
 const { AOL_STOP_TOOLS, executeAOLStopTool } = require("./aol-stop");
 const { SCHEDULE_TOOLS, executeSchedulerTool, initScheduler, handleModalSubmission, getSchedulesByUser, getScheduleById } = require("./scheduler");
 const { getScheduleModal, getManageSchedulesModal } = require("./modals");
+const { CLAUDE_CODE_TOOLS, executeClaudeCodeTool } = require("./claude-code");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -255,6 +256,7 @@ function describeToolCall(name, args) {
     case "open_manage_schedules": return `Loading your schedules...`;
     case "list_schedules":        return `Fetching your schedules...`;
     case "delete_schedule":       return `Deleting schedule...`;
+    case "use_claude_code":       return `Launching Claude Code agent...`;
     default:                      return `Running ${name}...`;
   }
 }
@@ -395,6 +397,11 @@ app.message(async ({ message, client, say }) => {
             result = executeAOLStatusTool(call.function.name, args);
           } else if (call.function.name === "stop_aol_services") {
             result = executeAOLStopTool(call.function.name, args);
+          } else if (call.function.name === "use_claude_code") {
+            // Claude Code tool needs special handling - delete status and run autonomously
+            await deleteStatus(client, channel, statusTs);
+            statusTs = null;
+            result = await executeClaudeCodeTool(call.function.name, args, client, channel, thread_ts);
           } else {
             result = executeTool(call.function.name, args);
           }
