@@ -42,15 +42,60 @@ function isComplete(content) {
   return content.trim().length > 0 && !isInProgress(content);
 }
 
+// Check if Obsidian is running, and open it if not
+function ensureObsidianRunning() {
+  try {
+    const result = execSync('pgrep -x Obsidian', { encoding: 'utf8' }).trim();
+    if (result) {
+      console.log('[briefing] Obsidian is running');
+      return true;
+    }
+  } catch (err) {
+    // pgrep returns exit code 1 if no process found
+    console.log('[briefing] Obsidian is not running, attempting to open...');
+    try {
+      execSync('open -a Obsidian', { timeout: 10000 });
+      // Wait 5 seconds for Obsidian to start
+      execSync('sleep 5');
+      console.log('[briefing] Obsidian opened');
+      return true;
+    } catch (openErr) {
+      console.error('[briefing] Failed to open Obsidian:', openErr.message);
+      return false;
+    }
+  }
+  return true;
+}
+
 // Trigger the briefing plugin using Obsidian CLI.
 // Much more reliable than AppleScript, especially when system has been idle.
 // Requires Obsidian CLI to be enabled in Settings → General → Command line interface.
 function triggerBriefingPlugin() {
   const commandId = "briefing-notes:generate-briefing-auto";
-  execSync(`obsidian eval "app.commands.executeCommandById('${commandId}')"`, {
-    timeout: 30000,
-    shell: "/bin/bash",
-  });
+
+  // Ensure Obsidian is running
+  if (!ensureObsidianRunning()) {
+    throw new Error('Could not start Obsidian');
+  }
+
+  try {
+    // Redirect stderr to /dev/null to ignore Obsidian's verbose logging
+    // The CLI outputs a lot of informational messages to stderr that aren't errors
+    execSync(`obsidian eval "app.commands.executeCommandById('${commandId}')" 2>/dev/null`, {
+      timeout: 30000,
+      shell: "/bin/bash",
+      stdio: ['pipe', 'pipe', 'ignore'], // Ignore stderr
+    });
+    console.log('[briefing] Successfully triggered briefing plugin via CLI');
+  } catch (err) {
+    // If the command fails but only because of stderr noise, it might have still worked
+    // Check if it's a real error (exit code > 0 and not just stderr output)
+    if (err.status && err.status !== 0 && !err.stderr) {
+      throw new Error(`Obsidian CLI failed with exit code ${err.status}. Make sure Obsidian is running and the CLI is enabled.`);
+    }
+    // Otherwise, assume it worked despite the stderr noise
+    console.log('[briefing] Obsidian CLI executed (ignoring stderr noise)');
+  }
 }
 
 async function runDailyBriefing() {
