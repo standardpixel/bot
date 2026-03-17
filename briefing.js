@@ -42,59 +42,73 @@ function isComplete(content) {
   return content.trim().length > 0 && !isInProgress(content);
 }
 
-// Check if Obsidian is running, and open it if not
-function ensureObsidianRunning() {
+// Check if Obsidian is running and has a vault open
+function ensureObsidianReady() {
   try {
     const result = execSync('pgrep -x Obsidian', { encoding: 'utf8' }).trim();
-    if (result) {
-      console.log('[briefing] Obsidian is running');
+    if (!result) {
+      console.log('[briefing] Obsidian is not running, attempting to open vault...');
+      // Open the vault directly using obsidian:// URI
+      // This both opens Obsidian and ensures the vault is loaded
+      const vaultName = 'evg'; // Extract from VAULT path
+      execSync(`open "obsidian://open?vault=${encodeURIComponent(vaultName)}"`, { timeout: 10000 });
+      // Wait 8 seconds for Obsidian and vault to load
+      execSync('sleep 8');
+      console.log('[briefing] Obsidian opened with vault');
       return true;
     }
-  } catch (err) {
-    // pgrep returns exit code 1 if no process found
-    console.log('[briefing] Obsidian is not running, attempting to open...');
+
+    // Obsidian is running, but make sure vault is open
+    console.log('[briefing] Obsidian is running, ensuring vault is open...');
+    const vaultName = 'evg';
     try {
-      execSync('open -a Obsidian', { timeout: 10000 });
-      // Wait 5 seconds for Obsidian to start
-      execSync('sleep 5');
-      console.log('[briefing] Obsidian opened');
-      return true;
-    } catch (openErr) {
-      console.error('[briefing] Failed to open Obsidian:', openErr.message);
-      return false;
+      execSync(`open "obsidian://open?vault=${encodeURIComponent(vaultName)}"`, { timeout: 5000 });
+      // Give it a moment to switch vaults if needed
+      execSync('sleep 2');
+    } catch (e) {
+      // Vault might already be open, that's okay
+      console.log('[briefing] Vault switch attempted');
     }
+
+    return true;
+  } catch (err) {
+    console.error('[briefing] Failed to ensure Obsidian is ready:', err.message);
+    return false;
   }
-  return true;
 }
 
-// Trigger the briefing plugin using Obsidian CLI.
-// Much more reliable than AppleScript, especially when system has been idle.
-// Requires Obsidian CLI to be enabled in Settings → General → Command line interface.
+// Trigger the briefing plugin using AppleScript with improvements for idle systems.
+// Requires Accessibility access for Terminal in System Settings → Privacy & Security.
 function triggerBriefingPlugin() {
-  const commandId = "briefing-notes:generate-briefing-auto";
-
-  // Ensure Obsidian is running
-  if (!ensureObsidianRunning()) {
-    throw new Error('Could not start Obsidian');
+  // Ensure Obsidian is running with vault open
+  if (!ensureObsidianReady()) {
+    throw new Error('Could not start Obsidian or open vault');
   }
 
+  const script = `
+tell application "Obsidian"
+  activate
+end tell
+delay 3
+tell application "System Events"
+  tell process "Obsidian"
+    keystroke "p" using {command down}
+    delay 1
+    keystroke "Generate Briefing Note (Auto)"
+    delay 1
+    key code 36
+  end tell
+end tell
+`;
+
   try {
-    // Redirect stderr to /dev/null to ignore Obsidian's verbose logging
-    // The CLI outputs a lot of informational messages to stderr that aren't errors
-    execSync(`obsidian eval "app.commands.executeCommandById('${commandId}')" 2>/dev/null`, {
+    execSync(`osascript << 'OSASCRIPT'\n${script}\nOSASCRIPT`, {
       timeout: 30000,
       shell: "/bin/bash",
-      stdio: ['pipe', 'pipe', 'ignore'], // Ignore stderr
     });
-    console.log('[briefing] Successfully triggered briefing plugin via CLI');
+    console.log('[briefing] Successfully triggered briefing plugin via AppleScript');
   } catch (err) {
-    // If the command fails but only because of stderr noise, it might have still worked
-    // Check if it's a real error (exit code > 0 and not just stderr output)
-    if (err.status && err.status !== 0 && !err.stderr) {
-      throw new Error(`Obsidian CLI failed with exit code ${err.status}. Make sure Obsidian is running and the CLI is enabled.`);
-    }
-    // Otherwise, assume it worked despite the stderr noise
-    console.log('[briefing] Obsidian CLI executed (ignoring stderr noise)');
+    throw new Error(`AppleScript failed: ${err.message}. Make sure Terminal has Accessibility access in System Settings.`);
   }
 }
 
