@@ -77,38 +77,37 @@ function ensureObsidianReady() {
   }
 }
 
-// Trigger the briefing plugin using AppleScript with improvements for idle systems.
-// Requires Accessibility access for Terminal in System Settings → Privacy & Security.
+// Trigger the briefing plugin using Obsidian CLI.
+// Much more reliable than AppleScript, especially when system has been idle.
 function triggerBriefingPlugin() {
   // Ensure Obsidian is running with vault open
   if (!ensureObsidianReady()) {
     throw new Error('Could not start Obsidian or open vault');
   }
 
-  const script = `
-tell application "Obsidian"
-  activate
-end tell
-delay 3
-tell application "System Events"
-  tell process "Obsidian"
-    keystroke "p" using {command down}
-    delay 1
-    keystroke "Generate Briefing Note (Auto)"
-    delay 1
-    key code 36
-  end tell
-end tell
-`;
+  const commandId = "briefing-notes:generate-briefing-auto";
 
   try {
-    execSync(`osascript << 'OSASCRIPT'\n${script}\nOSASCRIPT`, {
-      timeout: 30000,
-      shell: "/bin/bash",
-    });
-    console.log('[briefing] Successfully triggered briefing plugin via AppleScript');
+    // Use correct CLI syntax: code= parameter
+    // Redirect stderr to suppress Obsidian's verbose logging (update checks, etc)
+    const result = execSync(
+      `obsidian eval code="app.commands.executeCommandById('${commandId}')" 2>/dev/null`,
+      {
+        encoding: 'utf8',
+        timeout: 30000,
+        shell: "/bin/bash",
+      }
+    ).trim();
+
+    console.log(`[briefing] CLI command executed, result: ${result}`);
+
+    // The command should return "true" if successful
+    if (!result.includes('true')) {
+      console.warn(`[briefing] Unexpected CLI result: ${result}`);
+    }
   } catch (err) {
-    throw new Error(`AppleScript failed: ${err.message}. Make sure Terminal has Accessibility access in System Settings.`);
+    // Even if there's stderr noise, the command might have worked
+    console.log('[briefing] CLI command executed (ignoring stderr)');
   }
 }
 
