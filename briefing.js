@@ -86,12 +86,14 @@ function triggerBriefingPlugin() {
   }
 
   const commandId = "briefing-notes:generate-briefing-auto";
+  // Use full path to obsidian binary to avoid PATH issues in Node.js processes
+  const obsidianBin = "/Applications/Obsidian.app/Contents/MacOS/obsidian";
 
   try {
     // Use correct CLI syntax: code= parameter
     // Redirect stderr to suppress Obsidian's verbose logging (update checks, etc)
     const result = execSync(
-      `obsidian eval code="app.commands.executeCommandById('${commandId}')" 2>/dev/null`,
+      `"${obsidianBin}" eval code="app.commands.executeCommandById('${commandId}')" 2>/dev/null`,
       {
         encoding: 'utf8',
         timeout: 30000,
