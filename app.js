@@ -402,6 +402,7 @@ app.message(async ({ message, client, say }) => {
     const toolCallHistory = [];
     const LOOP_THRESHOLD = 2; // Same tool+args called this many times = loop
     const NUDGE_AFTER_ITERATIONS = 7; // Nudge model to respond after this many tool-only iterations
+    let wasNudged = false; // Track if we had to intervene
 
     function detectLoop(toolName, args) {
       const signature = `${toolName}:${JSON.stringify(args)}`;
@@ -415,6 +416,7 @@ app.message(async ({ message, client, say }) => {
       // After many iterations with no response, nudge the model
       if (i === NUDGE_AFTER_ITERATIONS) {
         console.log(`[loop-detection] Nudging model after ${i} iterations with no text response`);
+        wasNudged = true;
         messages.push({
           role: "user",
           content: "Please provide your response now based on what you've found. Summarize the information and answer the original question."
@@ -449,7 +451,12 @@ app.message(async ({ message, client, say }) => {
       if (choice.finish_reason !== "tool_calls") {
         await deleteStatus(client, channel, statusTs);
         statusTs = null;
-        await say(toSlackMessage(choice.message.content || "No response from model."));
+        let responseContent = choice.message.content || "No response from model.";
+        // Add note if we had to nudge the model
+        if (wasNudged) {
+          responseContent += "\n\n_Note: The model wanted to continue searching but was limited. This response may be less complete than usual._";
+        }
+        await say(toSlackMessage(responseContent));
         break;
       }
 
@@ -467,6 +474,7 @@ app.message(async ({ message, client, say }) => {
           if (detectLoop(call.function.name, args)) {
             console.log(`[loop-detection] Detected repeated call: ${call.function.name} with same args`);
             loopDetected = true;
+            wasNudged = true;
             result = "You've already called this tool with these arguments. Please provide your response based on the information you've gathered.";
             toolResults.push({
               role: "tool",
