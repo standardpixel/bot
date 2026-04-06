@@ -1,6 +1,8 @@
 /**
- * Slack Block Kit modal definitions for scheduling
+ * Slack Block Kit modal definitions for scheduling and model selection
  */
+
+const { ANTHROPIC_MODELS, getModelDisplayName } = require("./model-config");
 
 /**
  * Get schedule creation/edit modal
@@ -252,7 +254,105 @@ function getRecurrenceLabel(recurrence) {
   return labels[recurrence] || recurrence;
 }
 
+/**
+ * Get model selection modal
+ * @param {Object} currentModel - Current model config { provider, modelId }
+ * @param {Array} lmStudioModels - Available LM Studio models
+ * @param {boolean} hasAnthropicKey - Whether Anthropic API key is configured
+ * @returns {Object} Slack modal view object
+ */
+function getModelSelectionModal(currentModel, lmStudioModels = [], hasAnthropicKey = false) {
+  // Build options list
+  const options = [];
+
+  // Add Anthropic models if API key is available
+  if (hasAnthropicKey) {
+    for (const model of ANTHROPIC_MODELS) {
+      options.push({
+        text: { type: "plain_text", text: `${model.name} (Anthropic)` },
+        value: `anthropic:${model.id}`,
+      });
+    }
+  }
+
+  // Add LM Studio models
+  if (lmStudioModels.length > 0) {
+    for (const model of lmStudioModels) {
+      options.push({
+        text: { type: "plain_text", text: `${model.name} (LM Studio)` },
+        value: `lmstudio:${model.id}`,
+      });
+    }
+  } else {
+    // Add default LM Studio option if no models fetched
+    options.push({
+      text: { type: "plain_text", text: "LM Studio (default)" },
+      value: "lmstudio:default",
+    });
+  }
+
+  // Find current selection for initial_option
+  const currentValue = `${currentModel.provider}:${currentModel.modelId}`;
+  const currentOption = options.find((o) => o.value === currentValue) || options[0];
+  const currentDisplayName = getModelDisplayName(currentModel.provider, currentModel.modelId);
+
+  return {
+    type: "modal",
+    callback_id: "model_selection_submit",
+    title: {
+      type: "plain_text",
+      text: "Select AI Model",
+    },
+    submit: {
+      type: "plain_text",
+      text: "Save",
+    },
+    close: {
+      type: "plain_text",
+      text: "Cancel",
+    },
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Current model:* ${currentDisplayName}`,
+        },
+      },
+      {
+        type: "divider",
+      },
+      {
+        type: "input",
+        block_id: "model_block",
+        label: {
+          type: "plain_text",
+          text: "Model",
+        },
+        element: {
+          type: "static_select",
+          action_id: "model_select",
+          initial_option: currentOption,
+          options: options,
+        },
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: hasAnthropicKey
+              ? "Anthropic models use your API key. LM Studio models run locally."
+              : "⚠️ Anthropic API key not configured. Only LM Studio models available.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 module.exports = {
   getScheduleModal,
-  getManageSchedulesModal
+  getManageSchedulesModal,
+  getModelSelectionModal,
 };

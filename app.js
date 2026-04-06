@@ -1,6 +1,5 @@
 require("dotenv").config();
 const { App } = require("@slack/bolt");
-const OpenAI = require("openai");
 const { TOOLS, executeTool } = require("./obsidian");
 const { CALENDAR_TOOLS, executeCalendarTool } = require("./calendar");
 const { BRIEFING_TOOLS, executeBriefingTool } = require("./briefing");
@@ -12,22 +11,17 @@ const { AOL_ALL_TOOLS, executeAOLAllTool } = require("./aol-all");
 const { AOL_STATUS_TOOLS, executeAOLStatusTool } = require("./aol-status");
 const { AOL_STOP_TOOLS, executeAOLStopTool } = require("./aol-stop");
 const { SCHEDULE_TOOLS, executeSchedulerTool, initScheduler, handleModalSubmission, getSchedulesByUser, getScheduleById } = require("./scheduler");
-const { getScheduleModal, getManageSchedulesModal } = require("./modals");
+const { getScheduleModal, getManageSchedulesModal, getModelSelectionModal } = require("./modals");
 const { CLAUDE_CODE_TOOLS, executeClaudeCodeTool } = require("./claude-code");
+const { MODEL_TOOLS, getUserModel, setUserModel, executeModelTool, getModelDisplayName } = require("./model-config");
+const { chatCompletion, fetchLmStudioModels, hasAnthropicKey, lmstudio } = require("./llm-client");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS, ...MODEL_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   appToken: process.env.SLACK_APP_TOKEN,
   socketMode: true,
-});
-
-const lmstudio = new OpenAI({
-  baseURL: process.env.LM_STUDIO_BASE_URL || "http://localhost:1234/v1",
-  apiKey: "lm-studio",
-  timeout: 1200000, // 20 minute timeout (daily briefing can take up to 20 minutes)
-  maxRetries: 2,   // Retry up to 2 times on failure
 });
 
 // Helper function to execute tools (used by both message handler and scheduler)
@@ -103,6 +97,40 @@ app.action(/^delete_schedule_/, async ({ ack, body, client }) => {
   });
 });
 
+// Model selection modal submission handler
+app.view("model_selection_submit", async ({ ack, body, view, client }) => {
+  await ack();
+
+  const userId = body.user.id;
+  const modelValue = view.state.values.model_block.model_select.selected_option.value;
+  const [provider, modelId] = modelValue.split(":");
+
+  setUserModel(userId, provider, modelId);
+  const displayName = getModelDisplayName(provider, modelId);
+
+  await client.chat.postMessage({
+    channel: userId,
+    text: `✅ Model updated to *${displayName}* (${provider})`
+  });
+});
+
+// Button handler for model selection modal
+app.action("open_model_selection_button", async ({ ack, body, client }) => {
+  await ack();
+
+  // Fetch LM Studio models dynamically
+  let lmStudioModels = [];
+  try {
+    lmStudioModels = await fetchLmStudioModels();
+  } catch (err) {
+    console.log("[model] Could not fetch LM Studio models:", err.message);
+  }
+
+  const currentModel = getUserModel(body.user.id);
+  const modal = getModelSelectionModal(currentModel, lmStudioModels, hasAnthropicKey());
+  await client.views.open({ trigger_id: body.trigger_id, view: modal });
+});
+
 const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT ||
   "You are a helpful, knowledgeable assistant. " +
@@ -111,8 +139,6 @@ const SYSTEM_PROMPT =
   "When the user asks about a person, place, project, topic, or concept — always search the vault first using search_notes before responding. " +
   "If results are found, read the most relevant notes and summarize what you find. " +
   "Only say you don't have information after you have searched and found nothing. " +
-  "You can also create and update notes when explicitly asked to do so. " +
-  "Never create or overwrite a note unless the user specifically requests it. " +
   "Never save tool results (briefings, search results, calendar data) to the vault — just present them in your reply. " +
   "When referencing a note, mention its file path.\n\n" +
   "VAULT ORGANIZATION: The vault uses the PARA method:\n" +
@@ -124,6 +150,22 @@ const SYSTEM_PROMPT =
   "- People notes are in Resources/People/\n" +
   "- Company notes are in Resources/Companies/\n" +
   "When creating notes, place them in the appropriate PARA folder based on their purpose.\n\n" +
+  "QUICK NOTES: When the user sends a casual update mentioning people, projects, meetings, or events, proactively capture it:\n" +
+  "1. *Detect note-worthy messages* — Look for mentions of people, projects, meetings, conversations, commitments, progress updates, or new contacts.\n" +
+  "2. *Match existing people or projects* — Search the vault for the person's name or project name. Use context clues (company, role, location for people; keywords for projects) to disambiguate. Read the top match to verify it's correct.\n" +
+  "3. *Append to existing notes* — If a match is found, append a timestamped entry:\n" +
+  "   Format: `\\n\\n### YYYY-MM-DD\\n[Your summary of the update]`\n" +
+  "4. *Create new notes when appropriate*:\n" +
+  "   - New people → `Resources/People/Firstname Lastname.md`\n" +
+  "   - New projects (if user explicitly mentions starting one) → `Projects/Project Name.md`\n" +
+  "5. *Confirm briefly* — After updating/creating, confirm with a short message like: 'Added to Andrew Chen's note' or 'Updated Website Redesign project'\n" +
+  "6. *Don't over-ask* — If the intent is clear, just do it. Only ask for clarification if there are multiple matches or ambiguity.\n" +
+  "Examples of note-worthy messages:\n" +
+  "- 'Just met with Andrew from Slack, he'll get back to me next week' → Find Andrew (Slack context), append update\n" +
+  "- 'Met the new neighbor James Lee at 80 Bennit' → Create Resources/People/James Lee.md\n" +
+  "- 'Sarah mentioned she's moving to NYC in March' → Find Sarah, append update\n" +
+  "- 'Made progress on the website redesign - finished the homepage mockups' → Find website redesign project, append update\n" +
+  "- 'The API migration is blocked waiting on legal' → Find API migration project, append update\n\n" +
   "FORMATTING: You are responding inside Slack. Use Slack mrkdwn formatting only:\n" +
   "- *bold* for bold text (single asterisks)\n" +
   "- _italic_ for italic text\n" +
@@ -266,6 +308,8 @@ function describeToolCall(name, args) {
     case "list_schedules":        return `Fetching your schedules...`;
     case "delete_schedule":       return `Deleting schedule...`;
     case "use_claude_code":       return `Launching Claude Code agent...`;
+    case "open_model_selection":  return `Opening model selection...`;
+    case "get_current_model":     return `Checking current model...`;
     default:                      return `Running ${name}...`;
   }
 }
@@ -274,6 +318,47 @@ app.message(async ({ message, client, say }) => {
   if (message.channel_type !== "im" || message.subtype || message.bot_id) return;
 
   const { channel, thread_ts, ts } = message;
+  const text = (message.text || "").toLowerCase();
+
+  // Direct command: change/switch model - bypass LLM entirely
+  if (/\b(change|switch|select|set)\s+(my\s+)?(model|llm|ai)\b/.test(text) ||
+      /\bmodel\s+(selection|settings|config)\b/.test(text)) {
+    // Fetch LM Studio models
+    let lmStudioModels = [];
+    try {
+      lmStudioModels = await fetchLmStudioModels();
+    } catch (err) {
+      console.log("[model] Could not fetch LM Studio models:", err.message);
+    }
+
+    const currentModel = getUserModel(message.user);
+    const modal = getModelSelectionModal(currentModel, lmStudioModels, hasAnthropicKey());
+
+    // Post button to open modal (can't open modal directly without trigger_id from interaction)
+    await client.chat.postMessage({
+      channel,
+      text: "Click the button below to select your AI model:",
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "Click the button below to select your AI model:"
+          }
+        },
+        {
+          type: "actions",
+          elements: [{
+            type: "button",
+            text: { type: "plain_text", text: "Select Model" },
+            action_id: "open_model_selection_button",
+            style: "primary"
+          }]
+        }
+      ]
+    });
+    return;
+  }
 
   let statusTs = null;
   try {
@@ -309,20 +394,26 @@ app.message(async ({ message, client, say }) => {
       }),
     ];
 
+    // Get user's model preference
+    const userModel = getUserModel(message.user);
+    console.log(`[model] Using ${userModel.provider}:${userModel.modelId} for user ${message.user}`);
+
     const MAX_ITERATIONS = 10;
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       let response;
       try {
-        response = await lmstudio.chat.completions.create({
-          model: process.env.LM_STUDIO_MODEL || "openai/gpt-oss-20b",
+        response = await chatCompletion({
+          provider: userModel.provider,
+          modelId: userModel.modelId,
           messages,
           tools: ALL_TOOLS,
-          tool_choice: "auto",
+          systemPrompt: SYSTEM_PROMPT,
         });
       } catch (apiErr) {
-        console.error("[LM Studio API Error]", apiErr.message);
+        console.error("[API Error]", apiErr.message);
         await deleteStatus(client, channel, statusTs);
-        await say(`Unable to reach LM Studio. Please make sure:\n• LM Studio is running\n• A model is loaded\n• The local server is started in LM Studio\n\nError: ${apiErr.message}`);
+        const providerName = userModel.provider === "anthropic" ? "Anthropic" : "LM Studio";
+        await say(`Unable to reach ${providerName}. ${userModel.provider === "lmstudio" ? "Please make sure:\n• LM Studio is running\n• A model is loaded\n• The local server is started" : "Please check your API key."}\n\nError: ${apiErr.message}`);
         return;
       }
 
@@ -411,6 +502,39 @@ app.message(async ({ message, client, say }) => {
             await deleteStatus(client, channel, statusTs);
             statusTs = null;
             result = await executeClaudeCodeTool(call.function.name, args, client, channel, thread_ts);
+          } else if (call.function.name === "open_model_selection" || call.function.name === "get_current_model") {
+            result = executeModelTool(call.function.name, args, message.user);
+
+            // If it's a modal trigger, post a message with a button and stop
+            if (result.trigger_modal) {
+              await deleteStatus(client, channel, statusTs);
+
+              await client.chat.postMessage({
+                channel,
+                text: result.message,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: result.message
+                    }
+                  },
+                  {
+                    type: "actions",
+                    elements: [{
+                      type: "button",
+                      text: { type: "plain_text", text: "Select Model" },
+                      action_id: "open_model_selection_button",
+                      style: "primary"
+                    }]
+                  }
+                ]
+              });
+
+              // Stop processing - user needs to interact with modal
+              return;
+            }
           } else {
             result = executeTool(call.function.name, args);
           }

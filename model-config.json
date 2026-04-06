@@ -1,0 +1,12 @@
+{
+  "defaultModel": {
+    "provider": "lmstudio",
+    "modelId": "default"
+  },
+  "userModels": {
+    "U039LU8B2": {
+      "provider": "lmstudio",
+      "modelId": "openai/gpt-oss-20b"
+    }
+  }
+}
