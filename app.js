@@ -398,8 +398,28 @@ app.message(async ({ message, client, say }) => {
     const userModel = getUserModel(message.user);
     console.log(`[model] Using ${userModel.provider}:${userModel.modelId} for user ${message.user}`);
 
+    // Track tool calls to detect loops
+    const toolCallHistory = [];
+    const LOOP_THRESHOLD = 2; // Same tool+args called this many times = loop
+    const NUDGE_AFTER_ITERATIONS = 7; // Nudge model to respond after this many tool-only iterations
+
+    function detectLoop(toolName, args) {
+      const signature = `${toolName}:${JSON.stringify(args)}`;
+      toolCallHistory.push(signature);
+      const count = toolCallHistory.filter(s => s === signature).length;
+      return count >= LOOP_THRESHOLD;
+    }
+
     const MAX_ITERATIONS = 10;
     for (let i = 0; i < MAX_ITERATIONS; i++) {
+      // After many iterations with no response, nudge the model
+      if (i === NUDGE_AFTER_ITERATIONS) {
+        console.log(`[loop-detection] Nudging model after ${i} iterations with no text response`);
+        messages.push({
+          role: "user",
+          content: "Please provide your response now based on what you've found. Summarize the information and answer the original question."
+        });
+      }
       let response;
       try {
         response = await chatCompletion({
@@ -434,12 +454,28 @@ app.message(async ({ message, client, say }) => {
       }
 
       const toolResults = [];
+      let loopDetected = false;
+
       for (const call of choice.message.tool_calls) {
         let result;
         try {
           const args = JSON.parse(call.function.arguments);
           await updateStatus(client, channel, statusTs, describeToolCall(call.function.name, args));
           console.log(`[tool] ${call.function.name}`, args);
+
+          // Check for repetitive tool calling (loop detection)
+          if (detectLoop(call.function.name, args)) {
+            console.log(`[loop-detection] Detected repeated call: ${call.function.name} with same args`);
+            loopDetected = true;
+            result = "You've already called this tool with these arguments. Please provide your response based on the information you've gathered.";
+            toolResults.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: JSON.stringify(result),
+            });
+            continue;
+          }
+
           if (call.function.name.startsWith("open_schedule") ||
               call.function.name.startsWith("open_manage") ||
               call.function.name === "list_schedules" ||
@@ -573,7 +609,23 @@ app.message(async ({ message, client, say }) => {
         });
       }
       messages.push(...toolResults);
+
+      // If loop detected, add a stronger nudge
+      if (loopDetected) {
+        messages.push({
+          role: "user",
+          content: "You seem to be calling the same tools repeatedly. Please stop and provide your response now with the information you have."
+        });
+      }
+
       await updateStatus(client, channel, statusTs, "Thinking...");
+    }
+
+    // If we exhausted all iterations without a response
+    if (statusTs) {
+      console.log("[loop-detection] Max iterations reached without text response");
+      await deleteStatus(client, channel, statusTs);
+      await say("The model made many tool calls but didn't provide a final response. This can happen with some models. Try a different model or rephrase your question.");
     }
   } catch (err) {
     console.error("Error:", err.message);
