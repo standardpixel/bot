@@ -45,7 +45,7 @@ function isComplete(content) {
 // Check if Obsidian is running and has a vault open
 function ensureObsidianReady() {
   try {
-    const result = execSync('pgrep -x Obsidian', { encoding: 'utf8' }).trim();
+    const result = execSync('pgrep -x obsidian', { encoding: 'utf8' }).trim();
     if (!result) {
       console.log('[briefing] Obsidian is not running, attempting to open vault...');
       // Open the vault directly using obsidian:// URI
