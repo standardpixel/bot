@@ -1,145 +1,135 @@
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
+const { execSync } = require("child_process");
 
-// Strip shell escape characters (e.g. "\ " → " ", "\~" → "~") and expand ~
-const rawVault = (process.env.OBSIDIAN_VAULT_PATH || "").replace(/\\(.)/g, "$1");
-const VAULT = rawVault.startsWith("~")
-  ? path.join(os.homedir(), rawVault.slice(1))
-  : rawVault;
-const MAX_SEARCH_RESULTS = 20;
-const SEARCH_SNIPPET_CHARS = 200;
+const OBSIDIAN_BIN = "/Applications/Obsidian.app/Contents/MacOS/obsidian";
 
-function requireVault() {
-  if (!VAULT) throw new Error("OBSIDIAN_VAULT_PATH is not set in .env");
-  if (!fs.existsSync(VAULT)) {
-    throw new Error(`Vault path does not exist: ${VAULT}. This may be an iCloud sync issue. Make sure the vault is fully downloaded.`);
-  }
-}
+// Run an Obsidian CLI command and return the result
+function runCli(command, options = {}) {
+  const timeout = options.timeout || 30000;
 
-// Prevent path traversal attacks
-function safePath(relativePath) {
-  const resolved = path.resolve(VAULT, relativePath);
-  if (!resolved.startsWith(path.resolve(VAULT) + path.sep) && resolved !== path.resolve(VAULT)) {
-    throw new Error("Invalid path: must be inside the vault");
-  }
-  if (!resolved.endsWith(".md") && !fs.statSync(resolved).isDirectory()) {
-    throw new Error("Only .md files are permitted");
-  }
-  return resolved;
-}
-
-// Walk vault recursively, yielding .md file paths
-function* walkVault(dir) {
   try {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name.startsWith(".")) continue;
-      const full = path.join(dir, entry.name);
-      try {
-        if (entry.isDirectory()) yield* walkVault(full);
-        else if (entry.name.endsWith(".md")) yield full;
-      } catch (err) {
-        // Skip files that can't be accessed (e.g., iCloud placeholders)
-        console.warn(`[walkVault] Skipping ${full}: ${err.message}`);
-      }
-    }
+    const result = execSync(`"${OBSIDIAN_BIN}" ${command} 2>/dev/null`, {
+      encoding: "utf8",
+      timeout,
+      shell: "/bin/bash",
+      maxBuffer: 10 * 1024 * 1024, // 10MB for large search results
+    }).trim();
+    return result;
   } catch (err) {
-    console.warn(`[walkVault] Cannot read directory ${dir}: ${err.message}`);
+    if (err.killed) {
+      throw new Error(`CLI command timed out after ${timeout}ms`);
+    }
+    // Check if it's a "not enabled" error
+    if (err.message && err.message.includes("CLI is not enabled")) {
+      throw new Error(
+        "Obsidian CLI is not enabled. Enable it in Obsidian Settings → General → Command line interface"
+      );
+    }
+    throw new Error(`CLI error: ${err.message}`);
   }
 }
 
 // --- Tool implementations ---
 
 function searchNotes({ query }) {
-  requireVault();
-  const lower = query.toLowerCase();
-  const results = [];
-  let skippedFiles = 0;
-  for (const full of walkVault(VAULT)) {
-    if (results.length >= MAX_SEARCH_RESULTS) break;
-    const rel = path.relative(VAULT, full);
-    try {
-      const content = fs.readFileSync(full, "utf-8");
-      const idx = content.toLowerCase().indexOf(lower);
-      const titleMatch = rel.toLowerCase().includes(lower);
-      if (idx >= 0 || titleMatch) {
-        const start = Math.max(0, idx - 80);
-        const snippet = idx >= 0
-          ? "..." + content.slice(start, start + SEARCH_SNIPPET_CHARS).trim() + "..."
-          : "";
-        results.push({ path: rel, snippet });
-      }
-    } catch (err) {
-      // Skip files that can't be read (e.g., iCloud placeholders not yet downloaded)
-      console.warn(`[searchNotes] Skipping ${rel}: ${err.message}`);
-      skippedFiles++;
+  if (!query) throw new Error("Query is required");
+
+  // Use Obsidian's search:context command for snippets
+  const result = runCli(
+    `search:context query="${query.replace(/"/g, '\\"')}" format=json limit=20`,
+    { timeout: 60000 }
+  );
+
+  if (!result || result === "[]") {
+    return `No notes found matching: "${query}"`;
+  }
+
+  try {
+    const parsed = JSON.parse(result);
+    if (Array.isArray(parsed) && parsed.length === 0) {
+      return `No notes found matching: "${query}"`;
     }
+    return parsed;
+  } catch {
+    // If not JSON, return as-is (might be formatted text)
+    return result || `No notes found matching: "${query}"`;
   }
-
-  if (results.length === 0 && skippedFiles > 0) {
-    return `No notes found matching: "${query}". (Note: ${skippedFiles} files were skipped, possibly due to iCloud sync. Try again in a moment.)`;
-  }
-
-  return results.length > 0
-    ? results
-    : `No notes found matching: "${query}"`;
 }
 
 function readNote({ path: relativePath }) {
-  requireVault();
-  const full = safePath(relativePath);
-  if (!fs.existsSync(full)) throw new Error(`Note not found: ${relativePath}`);
-  return fs.readFileSync(full, "utf-8");
+  if (!relativePath) throw new Error("Path is required");
+
+  // Use path= for exact path matching
+  const result = runCli(`read path="${relativePath.replace(/"/g, '\\"')}"`);
+  return result;
 }
 
 function listVault({ folder = "" }) {
-  requireVault();
-  const dir = folder ? path.resolve(VAULT, folder) : VAULT;
-  if (!dir.startsWith(path.resolve(VAULT))) throw new Error("Invalid folder path");
-  if (!fs.existsSync(dir)) throw new Error(`Folder not found: ${folder}`);
-  return fs.readdirSync(dir, { withFileTypes: true })
-    .filter((e) => !e.name.startsWith("."))
-    .map((e) => ({
-      name: e.name,
-      type: e.isDirectory() ? "folder" : "file",
-      path: path.relative(VAULT, path.join(dir, e.name)),
-    }));
+  // Use files and folders commands
+  const folderArg = folder ? `folder="${folder.replace(/"/g, '\\"')}"` : "";
+
+  const filesResult = runCli(`files ${folderArg}`.trim());
+  const foldersResult = runCli(`folders ${folderArg}`.trim());
+
+  // Parse results (one item per line)
+  const files = filesResult
+    ? filesResult.split("\n").filter(Boolean).map((f) => ({ name: f.split("/").pop(), type: "file", path: f }))
+    : [];
+  const folders = foldersResult
+    ? foldersResult.split("\n").filter(Boolean).map((f) => ({ name: f.split("/").pop(), type: "folder", path: f }))
+    : [];
+
+  return [...folders, ...files];
 }
 
-function createNote({ path: relativePath, content }) {
-  requireVault();
-  if (!relativePath.endsWith(".md")) relativePath += ".md";
-  const full = path.resolve(VAULT, relativePath);
-  if (!full.startsWith(path.resolve(VAULT))) throw new Error("Invalid path");
-  fs.mkdirSync(path.dirname(full), { recursive: true });
-  fs.writeFileSync(full, content, "utf-8");
-  return `Created: ${relativePath}`;
+function createNote({ path: relativePath, content, template }) {
+  if (!relativePath) throw new Error("Path is required");
+
+  // Ensure .md extension
+  const notePath = relativePath.endsWith(".md") ? relativePath : relativePath + ".md";
+
+  // Build command with path= for exact location
+  let cmd = `create path="${notePath.replace(/"/g, '\\"')}"`;
+
+  if (template) {
+    cmd += ` template="${template.replace(/"/g, '\\"')}"`;
+  }
+
+  if (content) {
+    cmd += ` content="${content.replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
+  }
+
+  runCli(cmd);
+  return `Created: ${notePath}`;
 }
 
 function appendToNote({ path: relativePath, content }) {
-  requireVault();
-  const full = safePath(relativePath);
-  if (!fs.existsSync(full)) throw new Error(`Note not found: ${relativePath}`);
-  fs.appendFileSync(full, "\n" + content, "utf-8");
+  if (!relativePath) throw new Error("Path is required");
+  if (!content) throw new Error("Content is required");
+
+  const cmd = `append path="${relativePath.replace(/"/g, '\\"')}" content="${content.replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
+
+  runCli(cmd);
   return `Appended to: ${relativePath}`;
 }
 
 function writeDailyNote({ content, date }) {
-  requireVault();
-  const dateStr = date || (() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  })();
-  const filename = `${dateStr}.md`;
-  const full = path.resolve(VAULT, filename);
-  if (!full.startsWith(path.resolve(VAULT))) throw new Error("Invalid path");
-  if (fs.existsSync(full)) {
-    fs.appendFileSync(full, "\n" + content, "utf-8");
-    return `Appended to daily note: ${filename}`;
-  } else {
-    fs.writeFileSync(full, content, "utf-8");
-    return `Created daily note: ${filename}`;
+  if (!content) throw new Error("Content is required");
+
+  const escapedContent = content.replace(/"/g, '\\"').replace(/\n/g, "\\n");
+
+  if (date) {
+    // For specific dates, use append with the daily note path
+    // Assumes YYYY-MM-DD.md format in vault root (standard Obsidian daily notes)
+    const dailyPath = `${date}.md`;
+    runCli(`append path="${dailyPath}" content="${escapedContent}"`);
+    return `Written to daily note: ${dailyPath}`;
   }
+
+  // For today, use daily:append which handles creation and respects daily notes settings
+  runCli(`daily:append content="${escapedContent}"`);
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  return `Written to daily note: ${todayStr}.md`;
 }
 
 // --- OpenAI tool definitions ---
@@ -191,14 +181,15 @@ const TOOLS = [
     type: "function",
     function: {
       name: "create_note",
-      description: "Create a new note (or overwrite an existing one) with the given markdown content.",
+      description: "Create a new note with the given markdown content. Can optionally use an Obsidian template.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Relative path for the note, e.g. 'Daily/2025-02-17.md'" },
-          content: { type: "string", description: "Full markdown content of the note" },
+          path: { type: "string", description: "Relative path for the note, e.g. 'Projects/idea.md'" },
+          content: { type: "string", description: "Markdown content of the note (optional if using template)" },
+          template: { type: "string", description: "Name of an Obsidian template to use (optional)" },
         },
-        required: ["path", "content"],
+        required: ["path"],
       },
     },
   },
@@ -222,8 +213,8 @@ const TOOLS = [
     function: {
       name: "write_daily_note",
       description:
-        "Write content to today's daily note (YYYY-MM-DD.md in the vault root). " +
-        "If the file already exists the content is appended; otherwise the file is created. " +
+        "Write content to today's daily note (or a specific date). " +
+        "Content is appended if the daily note already exists. " +
         "Use this — never create_note — when the user asks to add something to their daily note.",
       parameters: {
         type: "object",
@@ -243,9 +234,9 @@ const TOOLS = [
 function executeTool(name, args) {
   switch (name) {
     case "search_notes":    return searchNotes(args);
-    case "read_note":      return readNote(args);
-    case "list_vault":     return listVault(args);
-    case "create_note":    return createNote(args);
+    case "read_note":       return readNote(args);
+    case "list_vault":      return listVault(args);
+    case "create_note":     return createNote(args);
     case "append_to_note":  return appendToNote(args);
     case "write_daily_note": return writeDailyNote(args);
     default: throw new Error(`Unknown tool: ${name}`);
