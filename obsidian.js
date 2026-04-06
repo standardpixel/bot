@@ -139,7 +139,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "search_notes",
-      description: "Search for notes in the Obsidian vault by keyword or phrase. Returns matching file paths and snippets.",
+      description: "Search for notes in the Obsidian vault by keyword or phrase. Returns matching file paths and snippets. The vault is organized using PARA: Projects/, Areas/, Resources/, Archives/. People are in Resources/People/, companies in Resources/Companies/.",
       parameters: {
         type: "object",
         properties: {
@@ -157,7 +157,7 @@ const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Relative path to the note from the vault root, e.g. 'Projects/idea.md'" },
+          path: { type: "string", description: "Relative path to the note from the vault root, e.g. 'Projects/MyProject.md' or 'Resources/People/John.md'" },
         },
         required: ["path"],
       },
@@ -167,11 +167,11 @@ const TOOLS = [
     type: "function",
     function: {
       name: "list_vault",
-      description: "List files and folders inside the vault or a subfolder.",
+      description: "List files and folders inside the vault or a subfolder. The vault uses PARA organization: Projects/, Areas/, Resources/, Archives/.",
       parameters: {
         type: "object",
         properties: {
-          folder: { type: "string", description: "Relative path to a subfolder, or empty string for the vault root" },
+          folder: { type: "string", description: "Relative path to a subfolder (e.g. 'Projects', 'Resources/People'), or empty for vault root" },
         },
         required: [],
       },
@@ -181,11 +181,11 @@ const TOOLS = [
     type: "function",
     function: {
       name: "create_note",
-      description: "Create a new note with the given markdown content. Can optionally use an Obsidian template.",
+      description: "Create a new note with the given markdown content. Can optionally use an Obsidian template. Place notes in appropriate PARA folders: Projects/ for active projects, Areas/ for ongoing responsibilities, Resources/ for reference material, Archives/ for completed items.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Relative path for the note, e.g. 'Projects/idea.md'" },
+          path: { type: "string", description: "Relative path for the note using PARA structure, e.g. 'Projects/NewProject.md' or 'Resources/People/Jane.md'" },
           content: { type: "string", description: "Markdown content of the note (optional if using template)" },
           template: { type: "string", description: "Name of an Obsidian template to use (optional)" },
         },
