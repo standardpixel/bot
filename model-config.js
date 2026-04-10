@@ -6,6 +6,7 @@ const CONFIG_FILE = path.join(__dirname, "model-config.json");
 // Anthropic models available for selection
 const ANTHROPIC_MODELS = [
   { id: "claude-opus-4-5-20251101", name: "Claude Opus 4.5", provider: "anthropic" },
+  { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", provider: "anthropic" },
   { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", provider: "anthropic" },
 ];
 

@@ -5,8 +5,8 @@
   },
   "userModels": {
     "U039LU8B2": {
-      "provider": "lmstudio",
-      "modelId": "openai/gpt-oss-20b"
+      "provider": "anthropic",
+      "modelId": "claude-sonnet-4-5-20250929"
     }
   }
 }
