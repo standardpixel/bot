@@ -14,9 +14,10 @@ const { SCHEDULE_TOOLS, executeSchedulerTool, initScheduler, handleModalSubmissi
 const { getScheduleModal, getManageSchedulesModal, getModelSelectionModal } = require("./modals");
 const { CLAUDE_CODE_TOOLS, executeClaudeCodeTool } = require("./claude-code");
 const { MODEL_TOOLS, getUserModel, setUserModel, executeModelTool, getModelDisplayName } = require("./model-config");
+const { ENTITY_LINKER_TOOLS, executeEntityLinkerTool } = require("./entity-linker");
 const { chatCompletion, fetchLmStudioModels, hasAnthropicKey, lmstudio } = require("./llm-client");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS, ...MODEL_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS, ...MODEL_TOOLS, ...ENTITY_LINKER_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -26,7 +27,7 @@ const app = new App({
 
 // Helper function to execute tools (used by both message handler and scheduler)
 async function executeToolByName(toolName, args) {
-  if (toolName.startsWith("get_calendar")) {
+  if (toolName.startsWith("get_calendar") || toolName === "check_calendar_conflicts" || toolName === "create_calendar_event") {
     return await executeCalendarTool(toolName, args);
   } else if (toolName.startsWith("run_daily")) {
     return await executeBriefingTool(toolName);
@@ -44,6 +45,8 @@ async function executeToolByName(toolName, args) {
     return executeAOLStatusTool(toolName, args);
   } else if (toolName === "stop_aol_services") {
     return executeAOLStopTool(toolName, args);
+  } else if (toolName.startsWith("link_entities")) {
+    return await executeEntityLinkerTool(toolName, args);
   } else {
     return executeTool(toolName, args);
   }
@@ -52,12 +55,12 @@ async function executeToolByName(toolName, args) {
 // Modal submission handlers
 app.view("schedule_modal_submit", async ({ ack, body, view, client }) => {
   await ack();
-  await handleModalSubmission(body, view, client, lmstudio, SYSTEM_PROMPT, ALL_TOOLS, executeToolByName, false);
+  await handleModalSubmission(body, view, client, lmstudio, getSystemPrompt(), ALL_TOOLS, executeToolByName, false);
 });
 
 app.view("edit_schedule_modal_submit", async ({ ack, body, view, client }) => {
   await ack();
-  await handleModalSubmission(body, view, client, lmstudio, SYSTEM_PROMPT, ALL_TOOLS, executeToolByName, true);
+  await handleModalSubmission(body, view, client, lmstudio, getSystemPrompt(), ALL_TOOLS, executeToolByName, true);
 });
 
 // Button handler for opening schedule modal (workaround for trigger_id)
@@ -131,9 +134,17 @@ app.action("open_model_selection_button", async ({ ack, body, client }) => {
   await client.views.open({ trigger_id: body.trigger_id, view: modal });
 });
 
-const SYSTEM_PROMPT =
-  process.env.SYSTEM_PROMPT ||
-  "You are a helpful, knowledgeable assistant. " +
+function getSystemPrompt() {
+  const today = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  return (
+    process.env.SYSTEM_PROMPT ||
+    `Today is ${today}. ` +
+    "You are a helpful, knowledgeable assistant. " +
   "You have access to an Obsidian vault, macOS Calendar, and scheduling capabilities via tools. " +
   "When the user asks to schedule something, use open_schedule_modal. When they want to view or manage their schedules, use open_manage_schedules. " +
   "When the user asks about a person, place, project, topic, or concept — always search the vault first using search_notes before responding. " +
@@ -183,7 +194,9 @@ const SYSTEM_PROMPT =
   "3. Read any matching notes in full.\n" +
   "4. Look for their company in the notes and search for it (try Resources/Companies/).\n" +
   "5. Search for recent mentions of the person in daily notes or elsewhere.\n" +
-  "6. Synthesize everything into a structured briefing with sections: Meeting Details, About [Person], About [Company], Recent Context, and Suggested Topics.";
+  "6. Synthesize everything into a structured briefing with sections: Meeting Details, About [Person], About [Company], Recent Context, and Suggested Topics."
+  );
+}
 
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || "20", 10);
 const RECENT_MESSAGES_FOCUS = parseInt(process.env.RECENT_MESSAGES_FOCUS || "10", 10);
@@ -296,6 +309,9 @@ function describeToolCall(name, args) {
     case "add_article":           return `Adding article and deploying to standardpixel.com...`;
     case "deploy_links":          return `Syncing and deploying links page...`;
     case "get_calendar_events":   return `Checking calendar...`;
+    case "get_calendar_names":    return `Getting available calendars...`;
+    case "check_calendar_conflicts": return `Checking for scheduling conflicts...`;
+    case "create_calendar_event": return `Creating calendar event: ${args.title}...`;
     case "run_daily_briefing":    return `Triggering briefing plugin — this can take a few minutes...`;
     case "start_stable_diffusion": return `Starting Stable Diffusion WebUI with API...`;
     case "start_aol1995_server":  return `Starting AOL 1995 server with HTTPS on port 3010...`;
@@ -310,6 +326,8 @@ function describeToolCall(name, args) {
     case "use_claude_code":       return `Launching Claude Code agent...`;
     case "open_model_selection":  return `Opening model selection...`;
     case "get_current_model":     return `Checking current model...`;
+    case "link_entities_in_note": return `Linking entities in note${args.notePath ? `: ${args.notePath}` : ""}...`;
+    case "link_entities_in_recent_notes": return `Linking entities in recent notes — this may take several minutes...`;
     default:                      return `Running ${name}...`;
   }
 }
@@ -383,7 +401,7 @@ app.message(async ({ message, client, say }) => {
       .slice(-RECENT_MESSAGES_FOCUS);
 
     const messages = [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: getSystemPrompt() },
       ...recentMessages.map((m) => {
         let content = m.text || "";
         // Truncate very long messages in history to save context
@@ -429,7 +447,7 @@ app.message(async ({ message, client, say }) => {
           modelId: userModel.modelId,
           messages,
           tools: ALL_TOOLS,
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt: getSystemPrompt(),
         });
       } catch (apiErr) {
         console.error("[API Error]", apiErr.message);
@@ -523,7 +541,7 @@ app.message(async ({ message, client, say }) => {
 
               result = "Modal button sent to user";
             }
-          } else if (call.function.name.startsWith("get_calendar")) {
+          } else if (call.function.name.startsWith("get_calendar") || call.function.name === "check_calendar_conflicts" || call.function.name === "create_calendar_event") {
             result = await executeCalendarTool(call.function.name, args);
           } else if (call.function.name.startsWith("run_daily")) {
             result = await executeBriefingTool(call.function.name);
@@ -541,6 +559,8 @@ app.message(async ({ message, client, say }) => {
             result = executeAOLStatusTool(call.function.name, args);
           } else if (call.function.name === "stop_aol_services") {
             result = executeAOLStopTool(call.function.name, args);
+          } else if (call.function.name.startsWith("link_entities")) {
+            result = await executeEntityLinkerTool(call.function.name, args);
           } else if (call.function.name === "use_claude_code") {
             // Claude Code tool needs special handling - delete status and run autonomously
             await deleteStatus(client, channel, statusTs);
@@ -600,7 +620,7 @@ app.message(async ({ message, client, say }) => {
             } else {
               errorMessage = `Vault error: ${err.message}`;
             }
-          } else if (call.function.name.startsWith("get_calendar")) {
+          } else if (call.function.name.startsWith("get_calendar") || call.function.name === "check_calendar_conflicts" || call.function.name === "create_calendar_event") {
             if (err.message.includes("timeout")) {
               errorMessage = "Calendar request timed out. The Calendar app may be unresponsive.";
             } else {
@@ -644,6 +664,6 @@ app.message(async ({ message, client, say }) => {
 
 (async () => {
   await app.start();
-  await initScheduler(app.client, lmstudio, SYSTEM_PROMPT, ALL_TOOLS, executeToolByName);
+  await initScheduler(app.client, lmstudio, getSystemPrompt(), ALL_TOOLS, executeToolByName);
   console.log("sp-bot is running");
 })();
