@@ -15,9 +15,10 @@ const { getScheduleModal, getManageSchedulesModal, getModelSelectionModal } = re
 const { CLAUDE_CODE_TOOLS, executeClaudeCodeTool } = require("./claude-code");
 const { MODEL_TOOLS, getUserModel, setUserModel, executeModelTool, getModelDisplayName } = require("./model-config");
 const { ENTITY_LINKER_TOOLS, executeEntityLinkerTool } = require("./entity-linker");
+const { TEXT_TO_SPEECH_TOOLS, executeTextToSpeechTool } = require("./text-to-speech");
 const { chatCompletion, fetchLmStudioModels, hasAnthropicKey, lmstudio } = require("./llm-client");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS, ...MODEL_TOOLS, ...ENTITY_LINKER_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS, ...MODEL_TOOLS, ...ENTITY_LINKER_TOOLS, ...TEXT_TO_SPEECH_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -306,6 +307,7 @@ function describeToolCall(name, args) {
     case "create_note":     return `Creating note: ${args.path}`;
     case "append_to_note":        return `Updating note: ${args.path}`;
     case "write_daily_note":      return `Writing to daily note...`;
+    case "archive_note":          return `Archiving note: ${args.path}...`;
     case "add_article":           return `Adding article and deploying to standardpixel.com...`;
     case "deploy_links":          return `Syncing and deploying links page...`;
     case "get_calendar_events":   return `Checking calendar...`;
@@ -328,6 +330,7 @@ function describeToolCall(name, args) {
     case "get_current_model":     return `Checking current model...`;
     case "link_entities_in_note": return `Linking entities in note${args.notePath ? `: ${args.notePath}` : ""}...`;
     case "link_entities_in_recent_notes": return `Linking entities in recent notes — this may take several minutes...`;
+    case "read_note_aloud":       return `Generating audio for ${args.path}...`;
     default:                      return `Running ${name}...`;
   }
 }
@@ -429,6 +432,9 @@ app.message(async ({ message, client, say }) => {
       return count >= LOOP_THRESHOLD;
     }
 
+    // Track which vault-modifying tools were actually called
+    const vaultToolsCalled = new Set();
+
     const MAX_ITERATIONS = 10;
     for (let i = 0; i < MAX_ITERATIONS; i++) {
       // After many iterations with no response, nudge the model
@@ -470,6 +476,20 @@ app.message(async ({ message, client, say }) => {
         await deleteStatus(client, channel, statusTs);
         statusTs = null;
         let responseContent = choice.message.content || "No response from model.";
+
+        // Validate: detect if model claims vault modifications without calling tools
+        const claimsArchive = /\b(archived|moved to (the )?archive|moved .+ to archive)\b/i.test(responseContent);
+        const claimsCreated = /\b(created|added) (a |the )?(new )?(note|file)\b/i.test(responseContent);
+        const claimsUpdated = /\b(updated|appended|added to|wrote to) (the )?(note|file|daily note)\b/i.test(responseContent);
+
+        const claimsVaultChange = claimsArchive || claimsCreated || claimsUpdated;
+        const noVaultToolsCalled = vaultToolsCalled.size === 0;
+
+        if (claimsVaultChange && noVaultToolsCalled) {
+          console.log("[hallucination-detected] Model claimed vault change but no tools were called");
+          responseContent += "\n\n:warning: *Warning: The model claimed to modify your vault but no tools were actually called. This can happen with some local models that don't support tool calling well. The action was NOT performed.*";
+        }
+
         // Add note if we had to nudge the model
         if (wasNudged) {
           responseContent += "\n\n_Note: The model wanted to continue searching but was limited. This response may be less complete than usual._";
@@ -487,6 +507,11 @@ app.message(async ({ message, client, say }) => {
           const args = JSON.parse(call.function.arguments);
           await updateStatus(client, channel, statusTs, describeToolCall(call.function.name, args));
           console.log(`[tool] ${call.function.name}`, args);
+
+          // Track vault-modifying tools
+          if (["create_note", "append_to_note", "write_daily_note", "archive_note"].includes(call.function.name)) {
+            vaultToolsCalled.add(call.function.name);
+          }
 
           // Check for repetitive tool calling (loop detection)
           if (detectLoop(call.function.name, args)) {
@@ -561,6 +586,8 @@ app.message(async ({ message, client, say }) => {
             result = executeAOLStopTool(call.function.name, args);
           } else if (call.function.name.startsWith("link_entities")) {
             result = await executeEntityLinkerTool(call.function.name, args);
+          } else if (call.function.name === "read_note_aloud") {
+            result = await executeTextToSpeechTool(call.function.name, args, client, channel);
           } else if (call.function.name === "use_claude_code") {
             // Claude Code tool needs special handling - delete status and run autonomously
             await deleteStatus(client, channel, statusTs);

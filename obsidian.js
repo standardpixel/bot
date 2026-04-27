@@ -132,6 +132,47 @@ function writeDailyNote({ content, date }) {
   return `Written to daily note: ${todayStr}.md`;
 }
 
+function archiveNote({ path: relativePath }) {
+  if (!relativePath) throw new Error("Path is required");
+
+  // Ensure .md extension for consistency
+  const notePath = relativePath.endsWith(".md") ? relativePath : relativePath + ".md";
+  const fileName = notePath.split("/").pop();
+
+  // Determine destination path in Archive folder
+  // If already in a subfolder structure, preserve it under Archive
+  const pathParts = notePath.split("/");
+  let destPath;
+  if (pathParts.length > 1 && pathParts[0] !== "Archive") {
+    // e.g., Projects/MyProject.md -> Archive/Projects/MyProject.md
+    destPath = `Archive/${notePath}`;
+  } else if (pathParts[0] === "Archive") {
+    throw new Error("Note is already in Archive");
+  } else {
+    // Root level file -> Archive/filename.md
+    destPath = `Archive/${fileName}`;
+  }
+
+  // First verify the source file exists
+  try {
+    runCli(`file path="${notePath.replace(/"/g, '\\"')}"`);
+  } catch (err) {
+    throw new Error(`Source file not found: ${notePath}`);
+  }
+
+  // Move the file
+  runCli(`move path="${notePath.replace(/"/g, '\\"')}" to="${destPath.replace(/"/g, '\\"')}"`);
+
+  // Verify the move succeeded by checking the file exists at destination
+  try {
+    runCli(`file path="${destPath.replace(/"/g, '\\"')}"`);
+  } catch (err) {
+    throw new Error(`Move failed: file not found at destination ${destPath}`);
+  }
+
+  return `Archived: ${notePath} → ${destPath}`;
+}
+
 // --- OpenAI tool definitions ---
 
 const TOOLS = [
@@ -229,6 +270,26 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "archive_note",
+      description:
+        "Move a note to the Archive folder. Use this when a project is completed or a note is no longer active. " +
+        "The note will be moved to Archive/ preserving its folder structure (e.g., Projects/MyProject.md → Archive/Projects/MyProject.md). " +
+        "This tool verifies the move succeeded before reporting success.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "Relative path to the note to archive, e.g. 'Projects/OldProject.md'",
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
 ];
 
 function executeTool(name, args) {
@@ -239,6 +300,7 @@ function executeTool(name, args) {
     case "create_note":     return createNote(args);
     case "append_to_note":  return appendToNote(args);
     case "write_daily_note": return writeDailyNote(args);
+    case "archive_note":    return archiveNote(args);
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }
