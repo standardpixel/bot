@@ -178,6 +178,7 @@ function getSystemPrompt() {
   "- 'Sarah mentioned she's moving to NYC in March' → Find Sarah, append update\n" +
   "- 'Made progress on the website redesign - finished the homepage mockups' → Find website redesign project, append update\n" +
   "- 'The API migration is blocked waiting on legal' → Find API migration project, append update\n\n" +
+  "IMAGE OCR: When the user uploads an image (such as a photo of handwritten notes), the text will be automatically extracted using OCR and processed as if it were a text message. Treat extracted text from images the same as typed messages — apply the QUICK NOTES logic to capture information to the vault.\n\n" +
   "FORMATTING: You are responding inside Slack. Use Slack mrkdwn formatting only:\n" +
   "- *bold* for bold text (single asterisks)\n" +
   "- _italic_ for italic text\n" +
@@ -335,11 +336,113 @@ function describeToolCall(name, args) {
   }
 }
 
+// Download image from Slack
+async function downloadSlackImage(url, token) {
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download image: ${response.statusText}`);
+  }
+
+  const buffer = await response.arrayBuffer();
+  return Buffer.from(buffer);
+}
+
+// Extract text from image using vision model via LM Studio
+async function extractTextFromImage(imageBuffer, mimeType) {
+  const base64Image = imageBuffer.toString('base64');
+  const imageUrl = `data:${mimeType};base64,${base64Image}`;
+
+  try {
+    const response = await lmstudio.chat.completions.create({
+      model: "mistralai/devstral-small-2-2512",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Extract all text from this image. If it contains handwritten notes, transcribe them carefully. Return only the extracted text, without any commentary or formatting."
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: imageUrl
+              }
+            }
+          ]
+        }
+      ],
+      max_tokens: 2000,
+    });
+
+    return response.choices[0].message.content;
+  } catch (err) {
+    console.error("[OCR Error]", err.message);
+    throw new Error(`Failed to extract text from image: ${err.message}`);
+  }
+}
+
 app.message(async ({ message, client, say }) => {
-  if (message.channel_type !== "im" || message.subtype || message.bot_id) return;
+  if (message.channel_type !== "im" || message.bot_id) return;
+
+  // Don't skip messages with files subtype
+  if (message.subtype && message.subtype !== 'file_share') return;
 
   const { channel, thread_ts, ts } = message;
-  const text = (message.text || "").toLowerCase();
+  let text = (message.text || "").toLowerCase();
+
+  // Check if message has image attachments
+  let extractedText = null;
+  if (message.files && message.files.length > 0) {
+    const imageFile = message.files.find(f => f.mimetype && f.mimetype.startsWith('image/'));
+    if (imageFile) {
+      try {
+        await client.reactions.add({
+          channel,
+          timestamp: ts,
+          name: 'eyes'
+        });
+
+        const imageBuffer = await downloadSlackImage(imageFile.url_private, process.env.SLACK_BOT_TOKEN);
+        extractedText = await extractTextFromImage(imageBuffer, imageFile.mimetype);
+
+        await client.reactions.remove({
+          channel,
+          timestamp: ts,
+          name: 'eyes'
+        });
+        await client.reactions.add({
+          channel,
+          timestamp: ts,
+          name: 'white_check_mark'
+        });
+
+        // Replace the message text with extracted text for processing
+        text = extractedText.toLowerCase();
+        console.log('[OCR] Extracted text from image:', extractedText);
+      } catch (err) {
+        console.error('[OCR] Failed to process image:', err.message);
+        await client.reactions.remove({
+          channel,
+          timestamp: ts,
+          name: 'eyes'
+        });
+        await client.reactions.add({
+          channel,
+          timestamp: ts,
+          name: 'x'
+        });
+        await say(`I couldn't extract text from that image. Error: ${err.message}\n\nMake sure:\n• LM Studio is running\n• The model \`mistralai/devstral-small-2-2512\` is loaded\n• The local server is started`);
+        return;
+      }
+    }
+  }
 
   // Direct command: change/switch model - bypass LLM entirely
   if (/\b(change|switch|select|set)\s+(my\s+)?(model|llm|ai)\b/.test(text) ||
@@ -405,14 +508,20 @@ app.message(async ({ message, client, say }) => {
 
     const messages = [
       { role: "system", content: getSystemPrompt() },
-      ...recentMessages.map((m) => {
-        let content = m.text || "";
-        // Truncate very long messages in history to save context
-        if (content.length > 500) {
-          content = content.slice(0, 500) + "... [truncated]";
-        }
-        return { role: m.bot_id ? "assistant" : "user", content };
-      }),
+      ...recentMessages
+        .map((m, idx) => {
+          let content = m.text || "";
+          // If this is the current message and we extracted text, use that instead
+          if (m.ts === ts && extractedText) {
+            content = extractedText;
+          }
+          // Truncate very long messages in history to save context (but not the current message)
+          if (content.length > 500 && m.ts !== ts) {
+            content = content.slice(0, 500) + "... [truncated]";
+          }
+          return { role: m.bot_id ? "assistant" : "user", content };
+        })
+        .filter((m) => m.content && m.content.trim().length > 0), // Filter out empty messages
     ];
 
     // Get user's model preference
