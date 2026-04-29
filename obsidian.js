@@ -173,6 +173,120 @@ function archiveNote({ path: relativePath }) {
   return `Archived: ${notePath} → ${destPath}`;
 }
 
+function commitVault({ message } = {}) {
+  const vaultPath = process.env.OBSIDIAN_VAULT_PATH;
+  if (!vaultPath) {
+    throw new Error("OBSIDIAN_VAULT_PATH environment variable not set");
+  }
+
+  try {
+    // Check if vault is a git repository
+    try {
+      execSync("git rev-parse --git-dir", { cwd: vaultPath, stdio: "ignore" });
+    } catch (err) {
+      throw new Error("Vault is not a git repository. Initialize git first.");
+    }
+
+    // Check if there are any changes to commit
+    const status = execSync("git status --porcelain", {
+      cwd: vaultPath,
+      encoding: "utf8"
+    }).trim();
+
+    if (!status) {
+      return "No changes to commit in vault.";
+    }
+
+    // Generate smart commit message if none provided
+    let commitMessage = message;
+    if (!commitMessage) {
+      // Parse the status to categorize changes
+      const lines = status.split("\n");
+      const stats = {
+        added: [],
+        modified: [],
+        deleted: [],
+        renamed: []
+      };
+
+      lines.forEach(line => {
+        const statusCode = line.substring(0, 2);
+        const filePath = line.substring(3);
+
+        if (statusCode.includes('A')) stats.added.push(filePath);
+        else if (statusCode.includes('M')) stats.modified.push(filePath);
+        else if (statusCode.includes('D')) stats.deleted.push(filePath);
+        else if (statusCode.includes('R')) stats.renamed.push(filePath);
+        else if (statusCode === '??') stats.added.push(filePath);
+      });
+
+      // Build a descriptive message
+      const parts = [];
+      if (stats.added.length > 0) {
+        const noteNames = stats.added.slice(0, 3).map(f => f.replace(/\.md$/, ''));
+        if (stats.added.length === 1) {
+          parts.push(`Add ${noteNames[0]}`);
+        } else if (stats.added.length <= 3) {
+          parts.push(`Add ${noteNames.join(', ')}`);
+        } else {
+          parts.push(`Add ${stats.added.length} notes`);
+        }
+      }
+      if (stats.modified.length > 0) {
+        const noteNames = stats.modified.slice(0, 3).map(f => f.replace(/\.md$/, ''));
+        if (stats.modified.length === 1) {
+          parts.push(`Update ${noteNames[0]}`);
+        } else if (stats.modified.length <= 3) {
+          parts.push(`Update ${noteNames.join(', ')}`);
+        } else {
+          parts.push(`Update ${stats.modified.length} notes`);
+        }
+      }
+      if (stats.deleted.length > 0) {
+        if (stats.deleted.length === 1) {
+          parts.push(`Delete ${stats.deleted[0].replace(/\.md$/, '')}`);
+        } else {
+          parts.push(`Delete ${stats.deleted.length} notes`);
+        }
+      }
+
+      commitMessage = parts.length > 0
+        ? parts.join('; ')
+        : `Vault update - ${new Date().toLocaleDateString()}`;
+    }
+
+    // Add all changes
+    execSync("git add -A", { cwd: vaultPath, stdio: "ignore" });
+
+    // Create commit with message
+    execSync(`git commit -m "${commitMessage.replace(/"/g, '\\"')}"`, {
+      cwd: vaultPath,
+      encoding: "utf8"
+    });
+
+    // Push to origin
+    const pushOutput = execSync("git push origin HEAD", {
+      cwd: vaultPath,
+      encoding: "utf8",
+      stdio: "pipe"
+    });
+
+    const changedFiles = status.split("\n").length;
+    return `✅ Committed and pushed vault changes to origin.\n\nFiles changed: ${changedFiles}\nCommit message: "${commitMessage}"`;
+  } catch (err) {
+    // More detailed error messages
+    if (err.message.includes("nothing to commit")) {
+      return "No changes to commit in vault.";
+    } else if (err.message.includes("not a git repository")) {
+      throw new Error("Vault is not a git repository. Initialize git first.");
+    } else if (err.message.includes("No configured push destination")) {
+      throw new Error("No remote repository configured. Set up a remote with: git remote add origin <url>");
+    } else {
+      throw new Error(`Failed to commit vault: ${err.message}`);
+    }
+  }
+}
+
 // --- OpenAI tool definitions ---
 
 const TOOLS = [
@@ -290,6 +404,27 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "commit_vault",
+      description:
+        "Commit all changes in the Obsidian vault and push to the remote repository. " +
+        "Use this when the user asks to commit their vault, or before performing potentially destructive operations. " +
+        "This creates a safety backup by committing and pushing all current changes. " +
+        "If no commit message is provided, it automatically generates a descriptive message based on which notes were added, modified, or deleted.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            description: "Optional commit message. If omitted, an intelligent message will be auto-generated from the changes (e.g., 'Add Project X; Update 3 daily notes').",
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 function executeTool(name, args) {
@@ -301,6 +436,7 @@ function executeTool(name, args) {
     case "append_to_note":  return appendToNote(args);
     case "write_daily_note": return writeDailyNote(args);
     case "archive_note":    return archiveNote(args);
+    case "commit_vault":    return commitVault(args);
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }

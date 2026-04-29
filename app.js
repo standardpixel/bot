@@ -12,13 +12,12 @@ const { AOL_STATUS_TOOLS, executeAOLStatusTool } = require("./aol-status");
 const { AOL_STOP_TOOLS, executeAOLStopTool } = require("./aol-stop");
 const { SCHEDULE_TOOLS, executeSchedulerTool, initScheduler, handleModalSubmission, getSchedulesByUser, getScheduleById } = require("./scheduler");
 const { getScheduleModal, getManageSchedulesModal, getModelSelectionModal } = require("./modals");
-const { CLAUDE_CODE_TOOLS, executeClaudeCodeTool } = require("./claude-code");
 const { MODEL_TOOLS, getUserModel, setUserModel, executeModelTool, getModelDisplayName } = require("./model-config");
 const { ENTITY_LINKER_TOOLS, executeEntityLinkerTool } = require("./entity-linker");
 const { TEXT_TO_SPEECH_TOOLS, executeTextToSpeechTool } = require("./text-to-speech");
 const { chatCompletion, fetchLmStudioModels, hasAnthropicKey, lmstudio } = require("./llm-client");
 
-const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...CLAUDE_CODE_TOOLS, ...MODEL_TOOLS, ...ENTITY_LINKER_TOOLS, ...TEXT_TO_SPEECH_TOOLS];
+const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...MODEL_TOOLS, ...ENTITY_LINKER_TOOLS, ...TEXT_TO_SPEECH_TOOLS];
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -179,6 +178,7 @@ function getSystemPrompt() {
   "- 'Made progress on the website redesign - finished the homepage mockups' → Find website redesign project, append update\n" +
   "- 'The API migration is blocked waiting on legal' → Find API migration project, append update\n\n" +
   "IMAGE OCR: When the user uploads an image (such as a photo of handwritten notes), the text will be automatically extracted using OCR and processed as if it were a text message. Treat extracted text from images the same as typed messages — apply the QUICK NOTES logic to capture information to the vault.\n\n" +
+  "VAULT BACKUP: When the user says 'commit my vault' or asks to backup/commit their vault, use the commit_vault tool. This commits all changes and pushes to the remote repository. This is particularly useful before performing potentially destructive operations on the vault.\n\n" +
   "FORMATTING: You are responding inside Slack. Use Slack mrkdwn formatting only:\n" +
   "- *bold* for bold text (single asterisks)\n" +
   "- _italic_ for italic text\n" +
@@ -309,6 +309,7 @@ function describeToolCall(name, args) {
     case "append_to_note":        return `Updating note: ${args.path}`;
     case "write_daily_note":      return `Writing to daily note...`;
     case "archive_note":          return `Archiving note: ${args.path}...`;
+    case "commit_vault":          return `Committing vault changes to git...`;
     case "add_article":           return `Adding article and deploying to standardpixel.com...`;
     case "deploy_links":          return `Syncing and deploying links page...`;
     case "get_calendar_events":   return `Checking calendar...`;
@@ -326,7 +327,6 @@ function describeToolCall(name, args) {
     case "open_manage_schedules": return `Loading your schedules...`;
     case "list_schedules":        return `Fetching your schedules...`;
     case "delete_schedule":       return `Deleting schedule...`;
-    case "use_claude_code":       return `Launching Claude Code agent...`;
     case "open_model_selection":  return `Opening model selection...`;
     case "get_current_model":     return `Checking current model...`;
     case "link_entities_in_note": return `Linking entities in note${args.notePath ? `: ${args.notePath}` : ""}...`;
@@ -697,11 +697,6 @@ app.message(async ({ message, client, say }) => {
             result = await executeEntityLinkerTool(call.function.name, args);
           } else if (call.function.name === "read_note_aloud") {
             result = await executeTextToSpeechTool(call.function.name, args, client, channel);
-          } else if (call.function.name === "use_claude_code") {
-            // Claude Code tool needs special handling - delete status and run autonomously
-            await deleteStatus(client, channel, statusTs);
-            statusTs = null;
-            result = await executeClaudeCodeTool(call.function.name, args, client, channel, thread_ts);
           } else if (call.function.name === "open_model_selection" || call.function.name === "get_current_model") {
             result = executeModelTool(call.function.name, args, message.user);
 
