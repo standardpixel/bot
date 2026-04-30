@@ -1,4 +1,5 @@
 const { execSync } = require("child_process");
+const os = require("os");
 
 const OBSIDIAN_BIN = "/Applications/Obsidian.app/Contents/MacOS/obsidian";
 
@@ -174,17 +175,25 @@ function archiveNote({ path: relativePath }) {
 }
 
 function commitVault({ message } = {}) {
-  const vaultPath = process.env.OBSIDIAN_VAULT_PATH;
+  let vaultPath = process.env.OBSIDIAN_VAULT_PATH;
   if (!vaultPath) {
     throw new Error("OBSIDIAN_VAULT_PATH environment variable not set");
   }
+
+  // Expand ~ to home directory
+  if (vaultPath.startsWith('~')) {
+    vaultPath = vaultPath.replace(/^~/, os.homedir());
+  }
+
+  // Remove escaped backslashes (shell escaping not needed in Node)
+  vaultPath = vaultPath.replace(/\\/g, '');
 
   try {
     // Check if vault is a git repository
     try {
       execSync("git rev-parse --git-dir", { cwd: vaultPath, stdio: "ignore" });
     } catch (err) {
-      throw new Error("Vault is not a git repository. Initialize git first.");
+      throw new Error(`Vault is not a git repository. Path checked: ${vaultPath}`);
     }
 
     // Check if there are any changes to commit
