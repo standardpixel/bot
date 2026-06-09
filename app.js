@@ -528,13 +528,19 @@ app.message(async ({ message, client, say }) => {
     const userModel = getUserModel(message.user);
     console.log(`[model] Using ${userModel.provider}:${userModel.modelId} for user ${message.user}`);
 
-    // Track tool calls to detect loops
+    // Track tool calls to detect loops (only for LM Studio models)
     const toolCallHistory = [];
     const LOOP_THRESHOLD = 2; // Same tool+args called this many times = loop
     const NUDGE_AFTER_ITERATIONS = 7; // Nudge model to respond after this many tool-only iterations
     let wasNudged = false; // Track if we had to intervene
 
     function detectLoop(toolName, args) {
+      // Only enforce loop detection for LM Studio models
+      // Anthropic models are clever enough to detect and handle loops themselves
+      if (userModel.provider !== "lmstudio") {
+        return false;
+      }
+
       const signature = `${toolName}:${JSON.stringify(args)}`;
       toolCallHistory.push(signature);
       const count = toolCallHistory.filter(s => s === signature).length;
@@ -546,9 +552,9 @@ app.message(async ({ message, client, say }) => {
 
     const MAX_ITERATIONS = 10;
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      // After many iterations with no response, nudge the model
-      if (i === NUDGE_AFTER_ITERATIONS) {
-        console.log(`[loop-detection] Nudging model after ${i} iterations with no text response`);
+      // After many iterations with no response, nudge the model (only for LM Studio)
+      if (i === NUDGE_AFTER_ITERATIONS && userModel.provider === "lmstudio") {
+        console.log(`[loop-detection] Nudging LM Studio model after ${i} iterations with no text response`);
         wasNudged = true;
         messages.push({
           role: "user",
