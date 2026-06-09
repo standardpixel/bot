@@ -1,0 +1,19 @@
+{
+  "defaultModel": {
+    "provider": "lmstudio",
+    "modelId": "default"
+  },
+  "userModels": {
+    "U123456789": {
+      "provider": "anthropic",
+      "modelId": "claude-sonnet-4-5-20250929"
+    }
+  },
+  "customAnthropicModels": [
+    {
+      "id": "claude-opus-5-20260101",
+      "name": "Claude Opus 5",
+      "provider": "anthropic"
+    }
+  ]
+}

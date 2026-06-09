@@ -3,11 +3,15 @@ const path = require("path");
 
 const CONFIG_FILE = path.join(__dirname, "model-config.json");
 
-// Anthropic models available for selection
-const ANTHROPIC_MODELS = [
+// Default Anthropic models available for selection
+// Note: You can add custom models via the customAnthropicModels array in model-config.json
+const DEFAULT_ANTHROPIC_MODELS = [
   { id: "claude-opus-4-5-20251101", name: "Claude Opus 4.5", provider: "anthropic" },
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", provider: "anthropic" },
+  { id: "claude-opus-4-20250514", name: "Claude Opus 4", provider: "anthropic" },
   { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4", provider: "anthropic" },
+  { id: "claude-haiku-4-20250514", name: "Claude Haiku 4", provider: "anthropic" },
+  { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet", provider: "anthropic" },
 ];
 
 /**
@@ -19,6 +23,7 @@ function loadConfig() {
       return {
         defaultModel: { provider: "lmstudio", modelId: "default" },
         userModels: {},
+        customAnthropicModels: [],
       };
     }
     const data = fs.readFileSync(CONFIG_FILE, "utf8");
@@ -28,8 +33,24 @@ function loadConfig() {
     return {
       defaultModel: { provider: "lmstudio", modelId: "default" },
       userModels: {},
+      customAnthropicModels: [],
     };
   }
+}
+
+/**
+ * Get all available Anthropic models (built-in + custom)
+ * Custom models can be added to model-config.json without code changes:
+ * {
+ *   "customAnthropicModels": [
+ *     { "id": "claude-model-id", "name": "Display Name", "provider": "anthropic" }
+ *   ]
+ * }
+ */
+function getAllAnthropicModels() {
+  const config = loadConfig();
+  const customModels = config.customAnthropicModels || [];
+  return [...DEFAULT_ANTHROPIC_MODELS, ...customModels];
 }
 
 /**
@@ -90,7 +111,8 @@ function setDefaultModel(provider, modelId) {
  */
 function getModelDisplayName(provider, modelId) {
   if (provider === "anthropic") {
-    const model = ANTHROPIC_MODELS.find((m) => m.id === modelId);
+    const allModels = getAllAnthropicModels();
+    const model = allModels.find((m) => m.id === modelId);
     return model ? model.name : modelId;
   }
   return modelId === "default" ? "LM Studio (default)" : modelId;
@@ -153,7 +175,8 @@ function executeModelTool(name, args, userId) {
 }
 
 module.exports = {
-  ANTHROPIC_MODELS,
+  ANTHROPIC_MODELS: DEFAULT_ANTHROPIC_MODELS, // For backwards compatibility
+  getAllAnthropicModels,
   MODEL_TOOLS,
   loadConfig,
   saveConfig,

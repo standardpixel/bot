@@ -2,7 +2,7 @@
  * Slack Block Kit modal definitions for scheduling and model selection
  */
 
-const { ANTHROPIC_MODELS, getModelDisplayName } = require("./model-config");
+const { getAllAnthropicModels, getModelDisplayName } = require("./model-config");
 
 /**
  * Get schedule creation/edit modal
@@ -267,7 +267,8 @@ function getModelSelectionModal(currentModel, lmStudioModels = [], hasAnthropicK
 
   // Add Anthropic models if API key is available
   if (hasAnthropicKey) {
-    for (const model of ANTHROPIC_MODELS) {
+    const anthropicModels = getAllAnthropicModels();
+    for (const model of anthropicModels) {
       options.push({
         text: { type: "plain_text", text: `${model.name} (Anthropic)` },
         value: `anthropic:${model.id}`,
