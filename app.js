@@ -16,6 +16,7 @@ const { MODEL_TOOLS, getUserModel, setUserModel, executeModelTool, getModelDispl
 const { ENTITY_LINKER_TOOLS, executeEntityLinkerTool } = require("./entity-linker");
 const { TEXT_TO_SPEECH_TOOLS, executeTextToSpeechTool } = require("./text-to-speech");
 const { chatCompletion, fetchLmStudioModels, hasAnthropicKey, lmstudio } = require("./llm-client");
+const { ensureAppsRunning } = require("./app-launcher");
 
 const ALL_TOOLS = [...TOOLS, ...CALENDAR_TOOLS, ...BRIEFING_TOOLS, ...LINKS_TOOLS, ...STABLE_DIFFUSION_TOOLS, ...AOL1995_TOOLS, ...AOL_SHORTCUT_TOOLS, ...AOL_ALL_TOOLS, ...AOL_STATUS_TOOLS, ...AOL_STOP_TOOLS, ...SCHEDULE_TOOLS, ...MODEL_TOOLS, ...ENTITY_LINKER_TOOLS, ...TEXT_TO_SPEECH_TOOLS];
 
@@ -527,6 +528,19 @@ app.message(async ({ message, client, say }) => {
     // Get user's model preference
     const userModel = getUserModel(message.user);
     console.log(`[model] Using ${userModel.provider}:${userModel.modelId} for user ${message.user}`);
+
+    // Ensure Obsidian and LM Studio are running before processing
+    try {
+      const launchedApps = await ensureAppsRunning();
+      if (launchedApps.length > 0) {
+        console.log(`[app-launcher] Launched apps: ${launchedApps.join(", ")}`);
+      }
+    } catch (err) {
+      console.error("[app-launcher] Failed to launch required apps:", err.message);
+      await deleteStatus(client, channel, statusTs);
+      await say(`Failed to launch required applications: ${err.message}\n\nPlease ensure Obsidian and LM Studio are installed in your Applications folder.`);
+      return;
+    }
 
     // Track tool calls to detect loops (only for LM Studio models)
     const toolCallHistory = [];

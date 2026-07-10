@@ -6,6 +6,9 @@ const CONFIG_FILE = path.join(__dirname, "model-config.json");
 // Default Anthropic models available for selection
 // Note: You can add custom models via the customAnthropicModels array in model-config.json
 const DEFAULT_ANTHROPIC_MODELS = [
+  { id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic" },
+  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "anthropic" },
+  { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", provider: "anthropic" },
   { id: "claude-opus-4-5-20251101", name: "Claude Opus 4.5", provider: "anthropic" },
   { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", provider: "anthropic" },
   { id: "claude-opus-4-20250514", name: "Claude Opus 4", provider: "anthropic" },

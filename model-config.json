@@ -6,7 +6,7 @@
   "userModels": {
     "U039LU8B2": {
       "provider": "anthropic",
-      "modelId": "claude-sonnet-4-5-20250929"
+      "modelId": "claude-opus-4-8"
     }
   }
 }
