@@ -1,7 +1,33 @@
 const { execSync } = require("child_process");
 const os = require("os");
+const fs = require("fs");
+const path = require("path");
 
 const OBSIDIAN_BIN = "/Applications/Obsidian.app/Contents/MacOS/obsidian";
+
+// Get the full filesystem path to a note in the vault
+function getVaultPath() {
+  let vaultPath = process.env.OBSIDIAN_VAULT_PATH;
+  if (!vaultPath) {
+    throw new Error("OBSIDIAN_VAULT_PATH environment variable not set");
+  }
+
+  // Expand ~ to home directory
+  if (vaultPath.startsWith('~')) {
+    vaultPath = vaultPath.replace(/^~/, os.homedir());
+  }
+
+  // Remove escaped backslashes (shell escaping not needed in Node)
+  vaultPath = vaultPath.replace(/\\/g, '');
+
+  return vaultPath;
+}
+
+function getFullNotePath(relativePath) {
+  const vaultPath = getVaultPath();
+  const notePath = relativePath.endsWith(".md") ? relativePath : relativePath + ".md";
+  return path.join(vaultPath, notePath);
+}
 
 // Run an Obsidian CLI command and return the result
 function runCli(command, options = {}) {
@@ -131,6 +157,96 @@ function writeDailyNote({ content, date }) {
 
   const todayStr = new Date().toISOString().split("T")[0];
   return `Written to daily note: ${todayStr}.md`;
+}
+
+function updateNote({ path: relativePath, content, confirm = false }) {
+  if (!relativePath) throw new Error("Path is required");
+  if (!content) throw new Error("Content is required");
+
+  const fullPath = getFullNotePath(relativePath);
+  const notePath = relativePath.endsWith(".md") ? relativePath : relativePath + ".md";
+
+  // Check if file exists
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(`Note not found: ${notePath}`);
+  }
+
+  // Read existing content to check if it would change
+  const existingContent = fs.readFileSync(fullPath, 'utf8');
+  if (existingContent === content) {
+    return `Note unchanged: ${notePath}`;
+  }
+
+  // If confirm flag is set, return preview instead of actually modifying
+  if (confirm) {
+    const preview = {
+      action: "update_note",
+      path: notePath,
+      existingLength: existingContent.length,
+      newLength: content.length,
+      preview: content.substring(0, 500) + (content.length > 500 ? "..." : ""),
+      needsConfirmation: true
+    };
+    return preview;
+  }
+
+  // Write new content
+  fs.writeFileSync(fullPath, content, 'utf8');
+  return `Updated: ${notePath}`;
+}
+
+function replaceInNote({ path: relativePath, search, replace, confirm = false }) {
+  if (!relativePath) throw new Error("Path is required");
+  if (!search) throw new Error("Search text is required");
+  if (replace === undefined) throw new Error("Replace text is required");
+
+  const fullPath = getFullNotePath(relativePath);
+  const notePath = relativePath.endsWith(".md") ? relativePath : relativePath + ".md";
+
+  // Check if file exists
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(`Note not found: ${notePath}`);
+  }
+
+  // Read existing content
+  const existingContent = fs.readFileSync(fullPath, 'utf8');
+
+  // Check if search text exists
+  if (!existingContent.includes(search)) {
+    throw new Error(`Search text not found in note: ${notePath}`);
+  }
+
+  // Perform replacement
+  const newContent = existingContent.replace(new RegExp(escapeRegex(search), 'g'), replace);
+
+  if (existingContent === newContent) {
+    return `Note unchanged: ${notePath}`;
+  }
+
+  // If confirm flag is set, return preview instead of actually modifying
+  if (confirm) {
+    const occurrences = (existingContent.match(new RegExp(escapeRegex(search), 'g')) || []).length;
+    const preview = {
+      action: "replace_in_note",
+      path: notePath,
+      search,
+      replace,
+      occurrences,
+      needsConfirmation: true
+    };
+    return preview;
+  }
+
+  // Write updated content
+  fs.writeFileSync(fullPath, newContent, 'utf8');
+
+  const occurrences = (existingContent.match(new RegExp(escapeRegex(search), 'g')) || []).length;
+  return `Replaced ${occurrences} occurrence(s) in: ${notePath}`;
+}
+
+// Helper function to escape regex special characters
+function escapeRegex(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function archiveNote({ path: relativePath }) {
@@ -375,6 +491,39 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "update_note",
+      description: "Replace the entire content of an existing note. Use this when you need to modify or rewrite an existing note. For safety, the model should read the note first before updating it.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative path to the note" },
+          content: { type: "string", description: "New markdown content for the note (replaces all existing content)" },
+          confirm: { type: "boolean", description: "If true, returns a preview without actually modifying the file. Use this to show the user what will change before making destructive changes." },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "replace_in_note",
+      description: "Find and replace specific text within a note. All occurrences of the search text will be replaced. For safety, the model should read the note first before replacing content.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative path to the note" },
+          search: { type: "string", description: "Exact text to search for" },
+          replace: { type: "string", description: "Text to replace with" },
+          confirm: { type: "boolean", description: "If true, returns a preview showing how many occurrences will be replaced without actually modifying the file." },
+        },
+        required: ["path", "search", "replace"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "write_daily_note",
       description:
         "Write content to today's daily note (or a specific date). " +
@@ -443,6 +592,8 @@ function executeTool(name, args) {
     case "list_vault":      return listVault(args);
     case "create_note":     return createNote(args);
     case "append_to_note":  return appendToNote(args);
+    case "update_note":     return updateNote(args);
+    case "replace_in_note": return replaceInNote(args);
     case "write_daily_note": return writeDailyNote(args);
     case "archive_note":    return archiveNote(args);
     case "commit_vault":    return commitVault(args);

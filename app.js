@@ -178,6 +178,16 @@ function getSystemPrompt() {
   "- 'Sarah mentioned she's moving to NYC in March' → Find Sarah, append update\n" +
   "- 'Made progress on the website redesign - finished the homepage mockups' → Find website redesign project, append update\n" +
   "- 'The API migration is blocked waiting on legal' → Find API migration project, append update\n\n" +
+  "MODIFYING NOTES: You can now modify existing note content using update_note and replace_in_note:\n" +
+  "- *update_note* — Replaces the entire content of a note. Use when rewriting or restructuring a note.\n" +
+  "- *replace_in_note* — Finds and replaces specific text within a note. Use for targeted edits.\n" +
+  "- *When to modify vs append:*\n" +
+  "  • For quick updates and new information → use append_to_note\n" +
+  "  • When the user explicitly asks to 'update', 'change', 'fix', or 'rewrite' something → use update_note or replace_in_note\n" +
+  "  • When restructuring or cleaning up a note → use update_note\n" +
+  "- *Safety first:* ALWAYS read the note first before modifying it. Never modify a note you haven't read.\n" +
+  "- *User confirmation:* When making significant changes, ask the user to confirm before using these tools.\n" +
+  "- *Avoid duplicates:* If a note already exists and the user wants to add info, modify it - don't create a duplicate with -1 suffix.\n\n" +
   "IMAGE OCR: When the user uploads an image (such as a photo of handwritten notes), the text will be automatically extracted using OCR and processed as if it were a text message. Treat extracted text from images the same as typed messages — apply the QUICK NOTES logic to capture information to the vault.\n\n" +
   "VAULT BACKUP: When the user says 'commit my vault' or asks to backup/commit their vault, use the commit_vault tool. This commits all changes and pushes to the remote repository. This is particularly useful before performing potentially destructive operations on the vault.\n\n" +
   "FORMATTING: You are responding inside Slack. Use Slack mrkdwn formatting only:\n" +
@@ -307,7 +317,9 @@ function describeToolCall(name, args) {
     case "read_note":       return `Reading note: ${args.path}`;
     case "list_vault":      return `Listing vault${args.folder ? `: ${args.folder}` : ""}...`;
     case "create_note":     return `Creating note: ${args.path}`;
-    case "append_to_note":        return `Updating note: ${args.path}`;
+    case "append_to_note":        return `Appending to note: ${args.path}`;
+    case "update_note":           return args.confirm ? `Previewing update to: ${args.path}` : `Updating note: ${args.path}`;
+    case "replace_in_note":       return args.confirm ? `Previewing replacement in: ${args.path}` : `Replacing text in: ${args.path}`;
     case "write_daily_note":      return `Writing to daily note...`;
     case "archive_note":          return `Archiving note: ${args.path}...`;
     case "commit_vault":          return `Committing vault changes to git...`;
@@ -638,7 +650,7 @@ app.message(async ({ message, client, say }) => {
           console.log(`[tool] ${call.function.name}`, args);
 
           // Track vault-modifying tools
-          if (["create_note", "append_to_note", "write_daily_note", "archive_note"].includes(call.function.name)) {
+          if (["create_note", "append_to_note", "update_note", "replace_in_note", "write_daily_note", "archive_note"].includes(call.function.name)) {
             vaultToolsCalled.add(call.function.name);
           }
 
