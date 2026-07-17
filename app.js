@@ -28,7 +28,7 @@ const app = new App({
 
 // Helper function to execute tools (used by both message handler and scheduler)
 async function executeToolByName(toolName, args) {
-  if (toolName.startsWith("get_calendar") || toolName === "check_calendar_conflicts" || toolName === "create_calendar_event") {
+  if (toolName.startsWith("get_calendar") || toolName === "check_calendar_conflicts" || toolName === "create_calendar_event" || toolName === "update_calendar_event" || toolName === "delete_calendar_event") {
     return await executeCalendarTool(toolName, args);
   } else if (toolName.startsWith("run_daily")) {
     return await executeBriefingTool(toolName);
@@ -201,6 +201,16 @@ function getSystemPrompt() {
   "- Never use HTML tags\n\n" +
   "DAILY NOTES: When the user asks to create or add to a daily note without providing content, ask them what they would like to add before calling write_daily_note. " +
   "Always use write_daily_note (never create_note) for daily notes — it appends safely if the file already exists.\n\n" +
+  "CALENDAR MANAGEMENT: You can read, create, update, and delete calendar events:\n" +
+  "- *get_calendar_events* — View upcoming events\n" +
+  "- *create_calendar_event* — Add new events (always check for conflicts first)\n" +
+  "- *update_calendar_event* — Modify existing events (title, time, duration, or notes)\n" +
+  "- *delete_calendar_event* — Remove events from the calendar\n" +
+  "- *Safety for destructive actions:* ALWAYS confirm with the user before updating or deleting calendar events\n" +
+  "  • Use confirm=true parameter first to preview what will change\n" +
+  "  • Show the user the preview and ask for confirmation\n" +
+  "  • Only proceed with the actual update/delete after user confirms\n" +
+  "- *Exception:* If the user explicitly says 'delete [event]' or 'update [event] to [new details]', you can still preview first but the intent is clear\n\n" +
   "MEETING PREP: When the user asks to prepare for a meeting with someone, follow these steps:\n" +
   "1. Call get_calendar_events to find the meeting details and other attendees.\n" +
   "2. Search the vault for notes about the person (try Resources/People/).\n" +
@@ -329,6 +339,8 @@ function describeToolCall(name, args) {
     case "get_calendar_names":    return `Getting available calendars...`;
     case "check_calendar_conflicts": return `Checking for scheduling conflicts...`;
     case "create_calendar_event": return `Creating calendar event: ${args.title}...`;
+    case "update_calendar_event": return args.confirm ? `Previewing update to event: ${args.title}` : `Updating calendar event: ${args.title}...`;
+    case "delete_calendar_event": return args.confirm ? `Previewing deletion of event: ${args.title}` : `Deleting calendar event: ${args.title}...`;
     case "run_daily_briefing":    return `Triggering briefing plugin — this can take a few minutes...`;
     case "start_stable_diffusion": return `Starting Stable Diffusion WebUI with API...`;
     case "start_aol1995_server":  return `Starting AOL 1995 server with HTTPS on port 3010...`;
@@ -537,6 +549,15 @@ app.message(async ({ message, client, say }) => {
         .filter((m) => m.content && m.content.trim().length > 0), // Filter out empty messages
     ];
 
+    // Ensure the conversation ends with a user message (required for Anthropic API)
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage && lastMessage.role === "assistant") {
+      // Remove trailing assistant messages - the current user message will be the last one
+      while (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+        messages.pop();
+      }
+    }
+
     // Get user's model preference
     const userModel = getUserModel(message.user);
     console.log(`[model] Using ${userModel.provider}:${userModel.modelId} for user ${message.user}`);
@@ -707,7 +728,7 @@ app.message(async ({ message, client, say }) => {
 
               result = "Modal button sent to user";
             }
-          } else if (call.function.name.startsWith("get_calendar") || call.function.name === "check_calendar_conflicts" || call.function.name === "create_calendar_event") {
+          } else if (call.function.name.startsWith("get_calendar") || call.function.name === "check_calendar_conflicts" || call.function.name === "create_calendar_event" || call.function.name === "update_calendar_event" || call.function.name === "delete_calendar_event") {
             result = await executeCalendarTool(call.function.name, args);
           } else if (call.function.name.startsWith("run_daily")) {
             result = await executeBriefingTool(call.function.name);

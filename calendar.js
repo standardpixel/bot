@@ -243,6 +243,231 @@ end tell
   });
 }
 
+// Find a specific event by title and approximate date (helper function)
+async function findEvent({ title, date }) {
+  return retryCalendarOperation("findEvent", async () => {
+    ensureCalendarRunning();
+
+    const searchDate = new Date(date);
+    const dayBefore = new Date(searchDate.getTime() - 24 * 60 * 60 * 1000);
+    const dayAfter = new Date(searchDate.getTime() + 24 * 60 * 60 * 1000);
+
+    const script = `
+tell application "Calendar"
+  set theOutput to ""
+  set searchStart to date "${formatForAppleScript(dayBefore.toISOString())}"
+  set searchEnd to date "${formatForAppleScript(dayAfter.toISOString())}"
+
+  repeat with aCal in calendars
+    try
+      set calEvents to every event of aCal whose start date >= searchStart and start date <= searchEnd
+      repeat with ev in calEvents
+        try
+          set evTitle to summary of ev
+          if evTitle contains "${title.replace(/"/g, '\\"')}" then
+            set evStart to start date of ev as string
+            set evEnd to end date of ev as string
+            set evCal to name of aCal
+            set evUID to uid of ev
+            set evNotes to ""
+            try
+              set evNotes to description of ev
+            end try
+            set theOutput to theOutput & evTitle & "~|~" & evStart & "~|~" & evEnd & "~|~" & evCal & "~|~" & evUID & "~|~" & evNotes & "~||~"
+          end if
+        end try
+      end repeat
+    end try
+  end repeat
+  return theOutput
+end tell
+`;
+
+    try {
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        timeout: 30000,
+        shell: "/bin/bash",
+      });
+
+      const raw = stdout.trim();
+      if (!raw) return [];
+
+      return raw
+        .split("~||~")
+        .filter(Boolean)
+        .map((line) => {
+          const [title, start, end, calendar, uid, notes] = line.split("~|~");
+          return {
+            title: title?.trim(),
+            start: start?.trim(),
+            end: end?.trim(),
+            calendar: calendar?.trim(),
+            uid: uid?.trim(),
+            notes: notes?.trim() || "",
+          };
+        });
+    } catch (err) {
+      console.error("[Calendar Error]", err.message);
+      throw new Error(`Failed to find event: ${err.message}`);
+    }
+  });
+}
+
+// Update an existing calendar event
+async function updateCalendarEvent({ title, date, newTitle, newStartDate, newDurationMinutes, newNotes, confirm = false }) {
+  return retryCalendarOperation("updateCalendarEvent", async () => {
+    ensureCalendarRunning();
+
+    // First find the event
+    const events = await findEvent({ title, date });
+
+    if (events.length === 0) {
+      throw new Error(`No event found matching "${title}" near ${date}`);
+    }
+
+    if (events.length > 1) {
+      const eventList = events.map(e => `- "${e.title}" on ${e.start} (${e.calendar})`).join("\n");
+      throw new Error(`Multiple events found matching "${title}":\n${eventList}\n\nPlease be more specific with the title or date.`);
+    }
+
+    const event = events[0];
+
+    // If confirm mode, return preview
+    if (confirm) {
+      const changes = [];
+      if (newTitle && newTitle !== event.title) changes.push(`Title: "${event.title}" → "${newTitle}"`);
+      if (newStartDate) changes.push(`Start: ${event.start} → ${new Date(newStartDate).toLocaleString()}`);
+      if (newDurationMinutes) changes.push(`Duration: changed to ${newDurationMinutes} minutes`);
+      if (newNotes !== undefined) changes.push(`Notes: ${event.notes ? 'updated' : 'added'}`);
+
+      return {
+        action: "update_calendar_event",
+        event: {
+          title: event.title,
+          start: event.start,
+          calendar: event.calendar
+        },
+        changes,
+        needsConfirmation: true
+      };
+    }
+
+    // Perform the update
+    const escapedUID = event.uid.replace(/"/g, '\\"');
+    const updates = [];
+
+    if (newTitle) {
+      updates.push(`set summary of targetEvent to "${newTitle.replace(/"/g, '\\"')}"`);
+    }
+    if (newStartDate) {
+      const start = new Date(newStartDate);
+      const duration = newDurationMinutes || 60;
+      updates.push(`set start date of targetEvent to date "${formatForAppleScript(start.toISOString())}"`);
+      updates.push(`set end date of targetEvent to (start date of targetEvent) + (${duration} * minutes)`);
+    } else if (newDurationMinutes) {
+      updates.push(`set end date of targetEvent to (start date of targetEvent) + (${newDurationMinutes} * minutes)`);
+    }
+    if (newNotes !== undefined) {
+      updates.push(`set description of targetEvent to "${newNotes.replace(/"/g, '\\"')}"`);
+    }
+
+    if (updates.length === 0) {
+      return { success: true, message: "No changes specified" };
+    }
+
+    const script = `
+tell application "Calendar"
+  repeat with aCal in calendars
+    try
+      set targetEvent to first event of aCal whose uid is "${escapedUID}"
+      ${updates.join("\n      ")}
+      return "Updated: " & summary of targetEvent & " on " & (start date of targetEvent as string)
+    end try
+  end repeat
+  error "Event not found"
+end tell
+`;
+
+    try {
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        timeout: 20000,
+        shell: "/bin/bash",
+      });
+
+      return { success: true, message: stdout.trim() };
+    } catch (err) {
+      console.error("[Calendar Error]", err.message);
+      throw new Error(`Failed to update calendar event: ${err.message}`);
+    }
+  });
+}
+
+// Delete a calendar event
+async function deleteCalendarEvent({ title, date, confirm = false }) {
+  return retryCalendarOperation("deleteCalendarEvent", async () => {
+    ensureCalendarRunning();
+
+    // First find the event
+    const events = await findEvent({ title, date });
+
+    if (events.length === 0) {
+      throw new Error(`No event found matching "${title}" near ${date}`);
+    }
+
+    if (events.length > 1) {
+      const eventList = events.map(e => `- "${e.title}" on ${e.start} (${e.calendar})`).join("\n");
+      throw new Error(`Multiple events found matching "${title}":\n${eventList}\n\nPlease be more specific with the title or date.`);
+    }
+
+    const event = events[0];
+
+    // If confirm mode, return preview
+    if (confirm) {
+      return {
+        action: "delete_calendar_event",
+        event: {
+          title: event.title,
+          start: event.start,
+          end: event.end,
+          calendar: event.calendar,
+          notes: event.notes
+        },
+        needsConfirmation: true
+      };
+    }
+
+    // Perform the deletion
+    const escapedUID = event.uid.replace(/"/g, '\\"');
+
+    const script = `
+tell application "Calendar"
+  repeat with aCal in calendars
+    try
+      set targetEvent to first event of aCal whose uid is "${escapedUID}"
+      set eventTitle to summary of targetEvent
+      set eventStart to start date of targetEvent as string
+      delete targetEvent
+      return "Deleted: " & eventTitle & " on " & eventStart
+    end try
+  end repeat
+  error "Event not found"
+end tell
+`;
+
+    try {
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        timeout: 20000,
+        shell: "/bin/bash",
+      });
+
+      return { success: true, message: stdout.trim() };
+    } catch (err) {
+      console.error("[Calendar Error]", err.message);
+      throw new Error(`Failed to delete calendar event: ${err.message}`);
+    }
+  });
+}
+
 // Create a new calendar event
 async function createCalendarEvent({ title, startDate, durationMinutes = 60, calendarName, notes = "" }) {
   return retryCalendarOperation("createCalendarEvent", async () => {
@@ -375,6 +600,74 @@ const CALENDAR_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "update_calendar_event",
+      description:
+        "Update an existing calendar event. Finds the event by title and date, then updates specified fields. IMPORTANT: Always confirm with the user before updating calendar events unless they explicitly requested the change.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Current title of the event to find",
+          },
+          date: {
+            type: "string",
+            description: "Approximate date of the event in ISO 8601 format (e.g., '2024-01-15'). Used to find the event.",
+          },
+          newTitle: {
+            type: "string",
+            description: "New title for the event (optional)",
+          },
+          newStartDate: {
+            type: "string",
+            description: "New start time in ISO 8601 format (e.g., '2024-01-15T14:00:00') (optional)",
+          },
+          newDurationMinutes: {
+            type: "number",
+            description: "New duration in minutes (optional)",
+          },
+          newNotes: {
+            type: "string",
+            description: "New notes/description for the event (optional)",
+          },
+          confirm: {
+            type: "boolean",
+            description: "If true, returns a preview of changes without actually updating. Use this to show the user what will change before making destructive changes.",
+          },
+        },
+        required: ["title", "date"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_calendar_event",
+      description:
+        "Delete a calendar event. Finds the event by title and date, then deletes it. IMPORTANT: ALWAYS confirm with the user before deleting calendar events. This is a destructive action that cannot be undone.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Title of the event to delete",
+          },
+          date: {
+            type: "string",
+            description: "Approximate date of the event in ISO 8601 format (e.g., '2024-01-15'). Used to find the event.",
+          },
+          confirm: {
+            type: "boolean",
+            description: "If true, returns a preview of the event to be deleted without actually deleting it. ALWAYS set this to true first to show the user what will be deleted.",
+          },
+        },
+        required: ["title", "date"],
+      },
+    },
+  },
 ];
 
 async function executeCalendarTool(name, args) {
@@ -383,6 +676,8 @@ async function executeCalendarTool(name, args) {
     case "get_calendar_names": return await getCalendarNames();
     case "check_calendar_conflicts": return await checkCalendarConflicts(args);
     case "create_calendar_event": return await createCalendarEvent(args);
+    case "update_calendar_event": return await updateCalendarEvent(args);
+    case "delete_calendar_event": return await deleteCalendarEvent(args);
     default: throw new Error(`Unknown calendar tool: ${name}`);
   }
 }
