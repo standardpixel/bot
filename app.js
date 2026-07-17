@@ -204,6 +204,8 @@ function getSystemPrompt() {
   "CALENDAR MANAGEMENT: You can read, create, update, and delete calendar events:\n" +
   "- *get_calendar_events* — View upcoming events\n" +
   "- *create_calendar_event* — Add new events (always check for conflicts first)\n" +
+  "  • If the user doesn't specify which calendar, the default calendar will be used automatically\n" +
+  "  • Only ask which calendar if the user explicitly mentions needing to choose (e.g., 'Should I add this to Work or Personal?')\n" +
   "- *update_calendar_event* — Modify existing events (title, time, duration, or notes)\n" +
   "- *delete_calendar_event* — Remove events from the calendar\n" +
   "- *Safety for destructive actions:* ALWAYS confirm with the user before updating or deleting calendar events\n" +

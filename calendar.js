@@ -130,6 +130,41 @@ function formatForAppleScript(isoString) {
   });
 }
 
+// Get the default calendar name from macOS preferences
+async function getDefaultCalendar() {
+  try {
+    // Try to read the default calendar from macOS preferences
+    // This reads the first writable calendar as a fallback
+    const script = `
+tell application "Calendar"
+  repeat with cal in calendars
+    if writable of cal then
+      return name of cal
+      exit repeat
+    end if
+  end repeat
+end tell
+`;
+
+    const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+      timeout: 10000,
+      shell: "/bin/bash",
+    });
+
+    const defaultCal = stdout.trim();
+    if (defaultCal) {
+      console.log(`[calendar] Default calendar: ${defaultCal}`);
+      return defaultCal;
+    }
+
+    // If no writable calendar found, return null
+    return null;
+  } catch (err) {
+    console.error("[Calendar Error] Failed to get default calendar:", err.message);
+    return null;
+  }
+}
+
 // Get list of available calendar names
 async function getCalendarNames() {
   return retryCalendarOperation("getCalendarNames", async () => {
@@ -474,10 +509,20 @@ async function createCalendarEvent({ title, startDate, durationMinutes = 60, cal
     // Ensure Calendar app is running and responsive before attempting operations
     ensureCalendarRunning();
 
+    // If no calendar specified, use the default calendar
+    let targetCalendar = calendarName;
+    if (!targetCalendar) {
+      targetCalendar = await getDefaultCalendar();
+      if (!targetCalendar) {
+        throw new Error("No calendar specified and could not determine default calendar. Please specify a calendar name.");
+      }
+      console.log(`[calendar] Using default calendar: ${targetCalendar}`);
+    }
+
     const start = new Date(startDate);
     const escapedTitle = title.replace(/"/g, '\\"');
     const escapedNotes = notes.replace(/"/g, '\\"');
-    const escapedCalendar = calendarName.replace(/"/g, '\\"');
+    const escapedCalendar = targetCalendar.replace(/"/g, '\\"');
 
     const notesProperty = notes ? `, description:"${escapedNotes}"` : "";
 
@@ -505,7 +550,7 @@ end tell
     } catch (err) {
       console.error("[Calendar Error]", err.message);
       if (err.message.includes("Can't get calendar")) {
-        throw new Error(`Calendar "${calendarName}" not found. Use get_calendar_names to see available calendars.`);
+        throw new Error(`Calendar "${targetCalendar}" not found. Use get_calendar_names to see available calendars.`);
       }
       throw new Error(`Failed to create calendar event: ${err.message}`);
     }
@@ -571,7 +616,7 @@ const CALENDAR_TOOLS = [
     function: {
       name: "create_calendar_event",
       description:
-        "Create a new event on a specific macOS calendar. IMPORTANT: Before calling this, always call check_calendar_conflicts first. If conflicts exist, ask the user for clarification before proceeding. If no conflicts, create the event directly.",
+        "Create a new event on a specific macOS calendar. IMPORTANT: Before calling this, always call check_calendar_conflicts first. If conflicts exist, ask the user for clarification before proceeding. If no conflicts, create the event directly. If calendarName is not specified, the user's default calendar will be used.",
       parameters: {
         type: "object",
         properties: {
@@ -589,14 +634,14 @@ const CALENDAR_TOOLS = [
           },
           calendarName: {
             type: "string",
-            description: "Name of the calendar to create the event on (e.g., 'Work', 'Personal')",
+            description: "Name of the calendar to create the event on (e.g., 'Work', 'Personal'). If not specified, the user's default calendar will be used.",
           },
           notes: {
             type: "string",
             description: "Optional notes/description for the event",
           },
         },
-        required: ["title", "startDate", "calendarName"],
+        required: ["title", "startDate"],
       },
     },
   },
