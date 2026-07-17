@@ -1,7 +1,45 @@
 const { exec } = require("child_process");
 const { promisify } = require("util");
+const { ensureCalendarRunning, restartCalendar } = require("./app-launcher");
 
 const execAsync = promisify(exec);
+
+// Retry wrapper for calendar operations with automatic restart on timeout
+async function retryCalendarOperation(operationName, operation, maxRetries = 2) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[calendar] ${operationName}: attempt ${attempt}/${maxRetries}`);
+      return await operation();
+    } catch (err) {
+      lastError = err;
+      console.error(`[calendar] ${operationName} failed (attempt ${attempt}/${maxRetries}):`, err.message);
+
+      // If this was a timeout and we have retries left, restart Calendar
+      if (err.killed && attempt < maxRetries) {
+        console.log(`[calendar] ${operationName} timed out, restarting Calendar app...`);
+        try {
+          restartCalendar();
+          console.log(`[calendar] Calendar restarted, retrying ${operationName}...`);
+        } catch (restartErr) {
+          console.error(`[calendar] Failed to restart Calendar:`, restartErr.message);
+          // Continue to next retry anyway
+        }
+      } else if (attempt < maxRetries) {
+        // For non-timeout errors, just ensure Calendar is running
+        console.log(`[calendar] Ensuring Calendar is running before retry...`);
+        ensureCalendarRunning();
+      }
+    }
+  }
+
+  // All retries exhausted
+  if (lastError.killed) {
+    throw new Error(`Calendar request timed out after ${maxRetries} attempts. The Calendar app may be unresponsive or have a very large dataset. Try restarting the Calendar app manually.`);
+  }
+  throw lastError;
+}
 
 // Query macOS Calendar via osascript. Returns events in the next `days` days.
 // Note: Terminal (or whichever process runs node) must have Calendar access
@@ -9,7 +47,11 @@ const execAsync = promisify(exec);
 // This function is async to avoid blocking the event loop (which would cause
 // Slack WebSocket disconnects during slow Calendar queries).
 async function getCalendarEvents({ days = 7 } = {}) {
-  const script = `
+  return retryCalendarOperation("getCalendarEvents", async () => {
+    // Ensure Calendar app is running and responsive before attempting operations
+    ensureCalendarRunning();
+
+    const script = `
 tell application "Calendar"
   set theOutput to ""
   set startDate to current date
@@ -39,37 +81,38 @@ tell application "Calendar"
 end tell
 `;
 
-  try {
-    const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
-      timeout: 30000, // 30 second timeout for slow Calendar app
-      shell: "/bin/bash",
-    });
-
-    const raw = stdout.trim();
-
-    if (!raw) return "No upcoming events found.";
-
-    return raw
-      .split("~||~")
-      .filter(Boolean)
-      .map((line) => {
-        const [title, start, end, attendees] = line.split("~|~");
-        return {
-          title: title?.trim(),
-          start: start?.trim(),
-          end: end?.trim(),
-          attendees: attendees?.trim()
-            ? attendees.split(",").map((a) => a.trim()).filter(Boolean)
-            : [],
-        };
+    try {
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        timeout: 45000, // Increased to 45 seconds
+        shell: "/bin/bash",
       });
-  } catch (err) {
-    console.error("[Calendar Error]", err.message);
-    if (err.killed) {
-      throw new Error("Calendar request timed out after 30 seconds. The Calendar app may be unresponsive.");
+
+      const raw = stdout.trim();
+
+      if (!raw) return "No upcoming events found.";
+
+      return raw
+        .split("~||~")
+        .filter(Boolean)
+        .map((line) => {
+          const [title, start, end, attendees] = line.split("~|~");
+          return {
+            title: title?.trim(),
+            start: start?.trim(),
+            end: end?.trim(),
+            attendees: attendees?.trim()
+              ? attendees.split(",").map((a) => a.trim()).filter(Boolean)
+              : [],
+          };
+        });
+    } catch (err) {
+      console.error("[Calendar Error]", err.message);
+      if (err.killed) {
+        throw new Error("Calendar request timed out. The Calendar app may be unresponsive.");
+      }
+      throw new Error(`Failed to access Calendar: ${err.message}. Make sure Terminal has Calendar access in System Settings.`);
     }
-    throw new Error(`Failed to access Calendar: ${err.message}. Make sure Terminal has Calendar access in System Settings.`);
-  }
+  });
 }
 
 // Helper to format JS Date/ISO string for AppleScript
@@ -89,7 +132,11 @@ function formatForAppleScript(isoString) {
 
 // Get list of available calendar names
 async function getCalendarNames() {
-  const script = `
+  return retryCalendarOperation("getCalendarNames", async () => {
+    // Ensure Calendar app is running and responsive before attempting operations
+    ensureCalendarRunning();
+
+    const script = `
 tell application "Calendar"
   set calNames to ""
   repeat with aCal in calendars
@@ -99,28 +146,33 @@ tell application "Calendar"
 end tell
 `;
 
-  try {
-    const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
-      timeout: 10000,
-      shell: "/bin/bash",
-    });
+    try {
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        timeout: 15000, // Increased to 15 seconds
+        shell: "/bin/bash",
+      });
 
-    const raw = stdout.trim();
-    if (!raw) return [];
+      const raw = stdout.trim();
+      if (!raw) return [];
 
-    return raw.split("~|~").filter(Boolean).map((name) => name.trim());
-  } catch (err) {
-    console.error("[Calendar Error]", err.message);
-    throw new Error(`Failed to get calendar names: ${err.message}`);
-  }
+      return raw.split("~|~").filter(Boolean).map((name) => name.trim());
+    } catch (err) {
+      console.error("[Calendar Error]", err.message);
+      throw new Error(`Failed to get calendar names: ${err.message}`);
+    }
+  });
 }
 
 // Check for conflicting events in a time range
 async function checkCalendarConflicts({ startDate, durationMinutes = 60 }) {
-  const start = new Date(startDate);
-  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  return retryCalendarOperation("checkCalendarConflicts", async () => {
+    // Ensure Calendar app is running and responsive before attempting operations
+    ensureCalendarRunning();
 
-  const script = `
+    const start = new Date(startDate);
+    const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+
+    const script = `
 tell application "Calendar"
   set theOutput to ""
   set startCheck to date "${formatForAppleScript(start.toISOString())}"
@@ -151,55 +203,60 @@ tell application "Calendar"
 end tell
 `;
 
-  try {
-    const { stdout, stderr } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
-      timeout: 60000,
-      shell: "/bin/bash",
-    });
-
-    if (stderr) {
-      console.error("[Calendar stderr]", stderr);
-    }
-
-    const raw = stdout.trim();
-    if (!raw) return { conflicts: [], hasConflicts: false };
-
-    const conflicts = raw
-      .split("~||~")
-      .filter(Boolean)
-      .map((line) => {
-        const [title, start, end, calendar] = line.split("~|~");
-        return {
-          title: title?.trim(),
-          start: start?.trim(),
-          end: end?.trim(),
-          calendar: calendar?.trim(),
-        };
+    try {
+      const { stdout, stderr } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        timeout: 60000, // Keep at 60 seconds
+        shell: "/bin/bash",
       });
 
-    return { conflicts, hasConflicts: conflicts.length > 0 };
-  } catch (err) {
-    console.error("[Calendar Error]", err.message);
-    if (err.stderr) {
-      console.error("[Calendar stderr]", err.stderr);
+      if (stderr) {
+        console.error("[Calendar stderr]", stderr);
+      }
+
+      const raw = stdout.trim();
+      if (!raw) return { conflicts: [], hasConflicts: false };
+
+      const conflicts = raw
+        .split("~||~")
+        .filter(Boolean)
+        .map((line) => {
+          const [title, start, end, calendar] = line.split("~|~");
+          return {
+            title: title?.trim(),
+            start: start?.trim(),
+            end: end?.trim(),
+            calendar: calendar?.trim(),
+          };
+        });
+
+      return { conflicts, hasConflicts: conflicts.length > 0 };
+    } catch (err) {
+      console.error("[Calendar Error]", err.message);
+      if (err.stderr) {
+        console.error("[Calendar stderr]", err.stderr);
+      }
+      if (err.killed) {
+        throw new Error("Calendar conflict check timed out. The Calendar app may be unresponsive.");
+      }
+      throw new Error(`Failed to check calendar conflicts: ${err.stderr || err.message}`);
     }
-    if (err.killed) {
-      throw new Error("Calendar conflict check timed out. The Calendar app may be unresponsive.");
-    }
-    throw new Error(`Failed to check calendar conflicts: ${err.stderr || err.message}`);
-  }
+  });
 }
 
 // Create a new calendar event
 async function createCalendarEvent({ title, startDate, durationMinutes = 60, calendarName, notes = "" }) {
-  const start = new Date(startDate);
-  const escapedTitle = title.replace(/"/g, '\\"');
-  const escapedNotes = notes.replace(/"/g, '\\"');
-  const escapedCalendar = calendarName.replace(/"/g, '\\"');
+  return retryCalendarOperation("createCalendarEvent", async () => {
+    // Ensure Calendar app is running and responsive before attempting operations
+    ensureCalendarRunning();
 
-  const notesProperty = notes ? `, description:"${escapedNotes}"` : "";
+    const start = new Date(startDate);
+    const escapedTitle = title.replace(/"/g, '\\"');
+    const escapedNotes = notes.replace(/"/g, '\\"');
+    const escapedCalendar = calendarName.replace(/"/g, '\\"');
 
-  const script = `
+    const notesProperty = notes ? `, description:"${escapedNotes}"` : "";
+
+    const script = `
 tell application "Calendar"
   set targetCal to first calendar whose name is "${escapedCalendar}"
   set startTime to date "${formatForAppleScript(start.toISOString())}"
@@ -213,20 +270,21 @@ tell application "Calendar"
 end tell
 `;
 
-  try {
-    const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
-      timeout: 15000,
-      shell: "/bin/bash",
-    });
+    try {
+      const { stdout } = await execAsync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        timeout: 20000, // Increased to 20 seconds
+        shell: "/bin/bash",
+      });
 
-    return { success: true, message: stdout.trim() };
-  } catch (err) {
-    console.error("[Calendar Error]", err.message);
-    if (err.message.includes("Can't get calendar")) {
-      throw new Error(`Calendar "${calendarName}" not found. Use get_calendar_names to see available calendars.`);
+      return { success: true, message: stdout.trim() };
+    } catch (err) {
+      console.error("[Calendar Error]", err.message);
+      if (err.message.includes("Can't get calendar")) {
+        throw new Error(`Calendar "${calendarName}" not found. Use get_calendar_names to see available calendars.`);
+      }
+      throw new Error(`Failed to create calendar event: ${err.message}`);
     }
-    throw new Error(`Failed to create calendar event: ${err.message}`);
-  }
+  });
 }
 
 const CALENDAR_TOOLS = [

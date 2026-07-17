@@ -189,6 +189,133 @@ function launchApp(appName) {
   }
 }
 
+// Check if Calendar app is responsive
+function isCalendarReady() {
+  try {
+    // Try a simple AppleScript command to verify Calendar is responsive
+    const script = `osascript -e 'tell application "Calendar" to name of calendars' 2>&1`;
+    execSync(script, {
+      encoding: "utf8",
+      timeout: 3000,
+      shell: "/bin/bash",
+    });
+    return true;
+  } catch (err) {
+    console.error(`[app-launcher] Calendar readiness check failed:`, err.message);
+    return false;
+  }
+}
+
+// Force quit and restart Calendar app
+function restartCalendar() {
+  const calendarAppName = "Calendar";
+
+  console.log(`[app-launcher] Force quitting ${calendarAppName}...`);
+
+  try {
+    // Try to quit gracefully first
+    execSync(`osascript -e 'tell application "${calendarAppName}" to quit'`, {
+      encoding: "utf8",
+      timeout: 3000,
+    });
+
+    // Wait a moment
+    execSync("sleep 1");
+
+    // If still running, force kill
+    if (isAppRunning(calendarAppName)) {
+      console.log(`[app-launcher] ${calendarAppName} didn't quit gracefully, force killing...`);
+      execSync(`killall -9 "${calendarAppName}" 2>/dev/null || true`, {
+        encoding: "utf8",
+      });
+      execSync("sleep 2");
+    }
+
+    console.log(`[app-launcher] ${calendarAppName} has been quit, relaunching...`);
+
+    // Now launch it again
+    launchApp(calendarAppName);
+
+    // Wait for it to be ready
+    console.log(`[app-launcher] Waiting for ${calendarAppName} to be ready after restart...`);
+    const startTime = Date.now();
+    const timeout = 15000; // 15 seconds after restart
+
+    while (!isCalendarReady()) {
+      if (Date.now() - startTime > timeout) {
+        console.warn(`[app-launcher] ${calendarAppName} may not be fully ready after restart, proceeding anyway...`);
+        break;
+      }
+      execSync("sleep 0.5");
+    }
+
+    console.log(`[app-launcher] ${calendarAppName} has been restarted and is ready`);
+    return true;
+  } catch (err) {
+    console.error(`[app-launcher] Error restarting ${calendarAppName}:`, err.message);
+    throw new Error(`Failed to restart ${calendarAppName}: ${err.message}`);
+  }
+}
+
+// Ensure Calendar app is running and responsive
+function ensureCalendarRunning() {
+  const calendarAppName = "Calendar";
+
+  // Check if Calendar is running
+  if (!isAppRunning(calendarAppName)) {
+    console.log(`[app-launcher] ${calendarAppName} is not running, launching...`);
+    launchApp(calendarAppName);
+
+    // Wait for Calendar to be ready
+    console.log(`[app-launcher] Waiting for ${calendarAppName} to be ready...`);
+    const startTime = Date.now();
+    const timeout = 10000; // 10 seconds
+
+    while (!isCalendarReady()) {
+      if (Date.now() - startTime > timeout) {
+        console.warn(`[app-launcher] ${calendarAppName} may not be fully ready, proceeding anyway...`);
+        break;
+      }
+      execSync("sleep 0.5");
+    }
+
+    console.log(`[app-launcher] ${calendarAppName} is now ready`);
+    return true;
+  }
+
+  // Calendar is running, check if it's responsive
+  if (!isCalendarReady()) {
+    console.log(`[app-launcher] ${calendarAppName} is running but not responsive, activating...`);
+
+    // Try activating it
+    try {
+      const script = `osascript -e 'tell application "${calendarAppName}" to activate'`;
+      execSync(script, { encoding: "utf8" });
+
+      // Wait a bit for it to become responsive
+      const startTime = Date.now();
+      const timeout = 5000; // 5 seconds
+
+      while (!isCalendarReady()) {
+        if (Date.now() - startTime > timeout) {
+          console.warn(`[app-launcher] ${calendarAppName} still not responsive after activation, proceeding anyway...`);
+          break;
+        }
+        execSync("sleep 0.5");
+      }
+
+      console.log(`[app-launcher] ${calendarAppName} is now responsive`);
+    } catch (err) {
+      console.warn(`[app-launcher] Could not activate ${calendarAppName}: ${err.message}`);
+    }
+
+    return true;
+  }
+
+  console.log(`[app-launcher] ${calendarAppName} is already running and responsive`);
+  return false; // Already running, no action taken
+}
+
 // Ensure both Obsidian and LM Studio are running and ready
 async function ensureAppsRunning() {
   const obsidianAppName = "Obsidian";
@@ -241,4 +368,6 @@ module.exports = {
   isAppRunning,
   launchApp,
   ensureAppsRunning,
+  ensureCalendarRunning,
+  restartCalendar,
 };
