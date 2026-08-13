@@ -85,16 +85,15 @@ function describeToolCall(name, args) {
   }
 }
 
-function getSystemPrompt() {
+function getSystemPrompt(interface = 'slack') {
   const today = new Date().toLocaleDateString("en-US", {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
   });
-  return (
-    process.env.SYSTEM_PROMPT ||
-    `Today is ${today}. ` +
+
+  const basePrompt = `Today is ${today}. ` +
     "You are a helpful, knowledgeable assistant. " +
   "You have access to an Obsidian vault, macOS Calendar, and scheduling capabilities via tools. " +
   "When the user asks to schedule something, use open_schedule_modal. When they want to view or manage their schedules, use open_manage_schedules. " +
@@ -169,8 +168,40 @@ function getSystemPrompt() {
   "3. Read any matching notes in full.\n" +
   "4. Look for their company in the notes and search for it (try Resources/Companies/).\n" +
   "5. Search for recent mentions of the person in daily notes or elsewhere.\n" +
-  "6. Synthesize everything into a structured briefing with sections: Meeting Details, About [Person], About [Company], Recent Context, and Suggested Topics."
-  );
+  "6. Synthesize everything into a structured briefing with sections: Meeting Details, About [Person], About [Company], Recent Context, and Suggested Topics.";
+
+  // Interface-specific instructions
+  if (interface === 'siri') {
+    return process.env.SYSTEM_PROMPT || (
+      "**CRITICAL - VOICE INTERFACE MODE:**\n" +
+      "You are responding via SIRI (voice assistant). The user will HEAR your response spoken aloud.\n\n" +
+      "RESPONSE FORMAT REQUIREMENTS:\n" +
+      "1. ONE OR TWO SENTENCES MAXIMUM for simple questions\n" +
+      "2. NO bullet points, NO lists, NO asterisks, NO formatting - ONLY plain conversational text\n" +
+      "3. NO file paths or technical details (never mention .md files or folder names)\n" +
+      "4. For actions: just say 'Done' or 'Added to [name]' - nothing more\n" +
+      "5. For complex topics: brief 2-3 sentence summary, then ask 'Want more details?'\n\n" +
+      "Examples of CORRECT responses:\n" +
+      "✅ 'I can help with notes, calendar, and capturing information. What do you need?'\n" +
+      "✅ 'Added to Andrew's note.'\n" +
+      "✅ 'You have team standup at 9, lunch at noon, and code review at 2.'\n" +
+      "✅ 'Sarah is a Senior Product Manager at Acme. Want to know more?'\n\n" +
+      basePrompt
+    );
+  } else {
+    // Slack interface
+    return process.env.SYSTEM_PROMPT || (basePrompt +
+      "\n\nFORMATTING: You are responding inside Slack. Use Slack mrkdwn formatting only:\n" +
+      "- *bold* for bold text (single asterisks)\n" +
+      "- _italic_ for italic text\n" +
+      "- Section headers as a bold line on its own: *Header*\n" +
+      "- Bullet points with a dash: - item\n" +
+      "- `inline code` and ```code blocks``` as normal\n" +
+      "- Never use ## or ### markdown headers\n" +
+      "- Never use ** for bold\n" +
+      "- Never use HTML tags"
+    );
+  }
 }
 
 /**
@@ -181,6 +212,7 @@ function getSystemPrompt() {
  * @param {string} options.userId - User identifier
  * @param {Object} options.userModel - Model configuration {provider, modelId}
  * @param {Function} options.statusCallback - Optional callback for status updates
+ * @param {string} options.interface - Interface type: 'slack' or 'siri' (default: 'slack')
  * @returns {Promise<{success: boolean, response?: string, error?: string, conversationHistory: Array}>}
  */
 async function processMessage({
@@ -189,9 +221,10 @@ async function processMessage({
   userId,
   userModel,
   statusCallback = null,
+  interface = 'slack',
 }) {
   const messages = [
-    { role: "system", content: getSystemPrompt() },
+    { role: "system", content: getSystemPrompt(interface) },
     ...conversationHistory.map(msg => ({
       role: msg.role,
       content: msg.content
@@ -260,7 +293,7 @@ async function processMessage({
         modelId: userModel.modelId,
         messages,
         tools: ALL_TOOLS,
-        systemPrompt: getSystemPrompt(),
+        systemPrompt: getSystemPrompt(interface),
       });
     } catch (apiErr) {
       console.error("[API Error]", apiErr.message);

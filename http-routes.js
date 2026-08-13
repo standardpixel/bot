@@ -12,7 +12,7 @@ router.get('/health', (req, res) => {
 // Main chat endpoint
 router.post('/chat', async (req, res) => {
   try {
-    const { message, conversationHistory } = req.body;
+    const { message, conversationHistory, modelProvider, modelId } = req.body;
 
     if (!message || typeof message !== 'string') {
       return res.status(400).json({
@@ -22,10 +22,19 @@ router.post('/chat', async (req, res) => {
       });
     }
 
-    // Use default model for HTTP requests (no user-specific model)
-    // The HTTP user can be configured via environment variable or use default
+    // Use model from request if provided, otherwise use default
     const httpUserId = process.env.HTTP_USER_ID || 'http-user';
-    const userModel = getUserModel(httpUserId);
+    let userModel;
+
+    if (modelProvider && modelId) {
+      // Use model specified by iOS app
+      userModel = { provider: modelProvider, modelId: modelId };
+      console.log(`[HTTP] Using iOS-selected model: ${modelProvider}/${modelId}`);
+    } else {
+      // Fall back to configured default model
+      userModel = getUserModel(httpUserId);
+      console.log(`[HTTP] Using default model: ${userModel.provider}/${userModel.modelId}`);
+    }
 
     console.log(`[HTTP] Processing message from iOS app: "${message.slice(0, 50)}..."`);
 
@@ -35,6 +44,7 @@ router.post('/chat', async (req, res) => {
       userId: httpUserId,
       userModel,
       statusCallback: null, // No status updates for HTTP
+      interface: 'siri', // Use brief, voice-friendly responses
     });
 
     if (result.success) {
